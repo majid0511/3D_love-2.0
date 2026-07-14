@@ -41,8 +41,8 @@ const CONFIG = {
     // Playlist musik latar. Tambahkan lagu baru dengan format { name, src }.
     // Urutan diputar sesuai array, otomatis lanjut ke lagu berikutnya saat selesai, lalu kembali ke awal.
     playlist: [
-        { name: 'Ed Sheeran - Perfect', src: 'lagu.mp3' }
-        // { name: 'Nadhif Basalamah - kota ini tak sama tanpamu (Official Lyric Video) (1)', src: 'lagu2.mp3' },
+        { name: 'Ed Sheeran - Perfect', src: 'lagu.mp3' },
+        { name: 'Nadhif Basalamah - kota ini tak sama tanpamu (Official Lyric Video) (1)', src: 'lagu2.mp3' },
         // { name: 'Lagu 3', src: 'lagu3.mp3' },
     ],
     // Caption untuk tiap foto, key = nomor file (sesuai images/{nomor}.jpg).
