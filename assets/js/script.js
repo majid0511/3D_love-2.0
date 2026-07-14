@@ -109,18 +109,35 @@ function loadPredefinedImages() {
             undefined, () => {}
         );
     });
-    // Scan otomatis file images/1.jpg sampai images/7.jpg
+    // Scan otomatis file images/1.jpg sampai images/N.ext
+    // Mencoba ekstensi satu per satu secara berurutan per nomor foto,
+    // dan berhenti begitu satu ekstensi berhasil ditemukan (hindari 404 berlebihan).
     if (CONFIG.preload.autoScanLocal) {
         for (let i = 1; i <= CONFIG.preload.scanCount; i++) {
-            CONFIG.preload.extensions.forEach(ext => {
-                const path = `./images/${i}.${ext}`;
-                loader.load(path,
-                    (t) => { t.colorSpace = THREE.SRGBColorSpace; addPhotoToScene(t); },
-                    undefined, () => {}
-                );
-            });
+            tryLoadImageSequential(loader, i, 0);
         }
     }
+}
+
+// Coba load images/{i}.{ext} secara berurutan sesuai CONFIG.preload.extensions.
+// Jika gagal, lanjut ke ekstensi berikutnya. Jika berhasil, berhenti (tidak lanjut scan ekstensi lain).
+function tryLoadImageSequential(loader, i, extIndex) {
+    const extensions = CONFIG.preload.extensions;
+    if (extIndex >= extensions.length) return; // Semua ekstensi sudah dicoba, tidak ada yang cocok
+
+    const path = `./images/${i}.${extensions[extIndex]}`;
+    loader.load(path,
+        (t) => {
+            t.colorSpace = THREE.SRGBColorSpace;
+            addPhotoToScene(t);
+            // Ekstensi ini cocok, tidak perlu coba ekstensi lain untuk foto ke-i
+        },
+        undefined,
+        () => {
+            // Gagal, coba ekstensi berikutnya untuk nomor foto yang sama
+            tryLoadImageSequential(loader, i, extIndex + 1);
+        }
+    );
 }
 
 // ============================================================
