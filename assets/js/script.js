@@ -1,6 +1,6 @@
 // ============================================================
 // IMPORT MODULES
-// Three.js untuk 3D, MediaPipe untuk hand tracking
+// Three.js untuk 3D, MediaPipe untuk hand & face tracking
 // ============================================================
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -8,192 +8,179 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+import { FilesetResolver, HandLandmarker, FaceLandmarker } from '@mediapipe/tasks-vision';
 
 // ============================================================
-// DETEKSI MOBILE - Cek apakah user menggunakan HP
+// DETEKSI MOBILE
 // ============================================================
 const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.innerWidth < 600;
 
 // ============================================================
-// KONFIGURASI - Semua pengaturan dalam satu objek
+// KONFIGURASI
 // ============================================================
 const CONFIG = {
-    colors: {
-        bg: 0x000000,          // Warna background hitam
-        frameColor: 0xffffff,  // Warna bingkai foto
-        deepGreen: 0x03180a,   // Hijau tua
-        accentRed: 0x990000,   // Merah aksen
-    },
-    particles: {
-        count: isMobile ? 800 : 1500,          // Jumlah partikel (lebih sedikit di mobile)
-        dustCount: isMobile ? 1200 : 2500,     // Jumlah debu
-        treeHeight: 24,
-        treeRadius: 8
-    },
-    camera: { z: 50 },                          // Posisi awal kamera
-    preload: {
-        autoScanLocal: true,                    // Auto scan gambar lokal
-        scanCount: 10,                           // Jumlah gambar di folder images/
-        extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp'],
-        images: []
-    },
-    // Playlist musik latar. Tambahkan lagu baru dengan format { name, src }.
-    // Urutan diputar sesuai array, otomatis lanjut ke lagu berikutnya saat selesai, lalu kembali ke awal.
+    colors: { bg: 0x000000, frameColor: 0xffffff, deepGreen: 0x03180a, accentRed: 0x990000 },
+    particles: { count: isMobile ? 800 : 1500, dustCount: isMobile ? 1200 : 2500, treeHeight: 24, treeRadius: 8 },
+    camera: { z: 50 },
+    preload: { autoScanLocal: true, scanCount: 9, images: [] },
     playlist: [
         { name: 'Lagu Utama', src: 'lagu.mp3' },
         { name: 'Lagu 2', src: 'lagu2.mp3' },
-        // { name: 'Lagu 3', src: 'lagu3.mp3' },
     ],
-    // Caption untuk tiap foto, key = nomor file (sesuai images/{nomor}.jpg).
-    // Kosongkan jika foto tidak punya caption.
-    captions: {
-        // 1: 'Liburan pertama kita ✨',
-        // 2: 'Momen paling berkesan',
+    captions: {},
+    face: {
+        enabled: true, smileThreshold: 0.15, particleScaleMultiplier: 2.8,
+        particleEmissiveMultiplier: 3.5, transitionSpeed: 3.0, dustBloomMultiplier: 5.0, colorShift: 0xff66aa,
     }
 };
 
 // ============================================================
-// STATE GLOBAL - Menyimpan status aplikasi
+// STATE GLOBAL
 // ============================================================
 const STATE = {
-    mode: 'TREE',          // Mode: TREE | SCATTER | FOCUS
-    focusIndex: -1,
-    focusTarget: null,     // Mesh foto yang sedang di-focus
-    trackIndex: 0,         // Index lagu yang sedang diputar di playlist
-    hand: { detected: false, x: 0, y: 0 },  // Posisi tangan (MediaPipe)
-    rotation: { x: 0, y: 0 },               // Rotasi grup utama
-    touch: { active: false, startX: 0, startY: 0, pinchDist: 0 }  // Touch state mobile
+    mode: 'TREE', focusIndex: -1, focusTarget: null, trackIndex: 0,
+    hand: { detected: false, x: 0, y: 0 },
+    rotation: { x: 0, y: 0 },
+    touch: { active: false, startX: 0, startY: 0, pinchDist: 0 },
+    face: { detected: false, smileIntensity: 0, targetIntensity: 0, mouthRatio: 0, lastProcessed: 0, }
 };
 
-// Tracking swipe tangan (untuk navigasi ganti foto di mode FOCUS)
-let prevHandX = null;
-let prevHandTime = 0;
-let swipeCooldownUntil = 0;
-const SWIPE_VELOCITY_THRESHOLD = 0.006;  // Sensitivitas swipe (unit per ms), makin kecil makin sensitif
-const SWIPE_COOLDOWN_MS = 600;           // Jeda antar-swipe biar gak ke-trigger berkali-kali
+// Tracking swipe
+let prevHandX = null, prevHandTime = 0, swipeCooldownUntil = 0;
+const SWIPE_VELOCITY_THRESHOLD = 0.006, SWIPE_COOLDOWN_MS = 600;
 
-// --- EASTER EGG: Screenshot via peace sign (✌️) ditahan 2 detik ---
-let peaceSignStartTime = null;   // Waktu mulai peace sign terdeteksi (null = belum/tidak terdeteksi)
-let captureRequested = false;    // Flag: capture diminta, diproses di animate() setelah render
-const PEACE_HOLD_MS = 2000;      // Durasi tahan peace sign sebelum capture terpicu
-let captureCooldownUntil = 0;
-const CAPTURE_COOLDOWN_MS = 3000; // Jeda antar-capture biar gak spam kalau gesture ditahan terus
+// Easter egg screenshot
+let peaceSignStartTime = null, captureRequested = false, captureCooldownUntil = 0;
+const PEACE_HOLD_MS = 2000, CAPTURE_COOLDOWN_MS = 3000;
 
 // ============================================================
-// VARIABEL GLOBAL THREE.JS
+// DOM REFERENCES (null-safe)
+// ============================================================
+const $ = id => document.getElementById(id);
+const debugInfo = $('debug-info');
+const modeIndicator = $('mode-indicator');
+const photoCaption = $('photo-caption');
+const loader = $('loader');
+const webcamWrapper = $('webcam-wrapper');
+const canvasContainer = $('canvas-container');
+const overlayCanvas = $('overlay-canvas');
+const overlayCtx = overlayCanvas ? overlayCanvas.getContext('2d') : null;
+const bgmAudio = $('bgm');
+const playBtn = $('play-btn');
+const nextTrackBtn = $('next-track-btn');
+const trackNameEl = $('track-name');
+const camToggleBtn = $('cam-toggle-btn');
+const captureFlash = $('capture-flash');
+const captureNotif = $('capture-notif');
+
+// ============================================================
+// THREE.JS GLOBALS
 // ============================================================
 let scene, camera, renderer, composer, controls;
-let mainGroup;
+let mainGroup, photoMeshGroup;
 let clock = new THREE.Clock();
-let particleSystem = [];           // Array semua partikel
-let photoMeshGroup = new THREE.Group();  // Grup untuk foto
-let handLandmarker, video;
-let caneTexture;
-const debugInfo = document.getElementById('debug-info');
-const modeIndicator = document.getElementById('mode-indicator');
+let particleSystem = [];
+let handLandmarker, faceLandmarker, video;
+let sceneEnvironment = null, canvasTexture = null, bloomPass = null;
+let initAttempted = false;
 
 // ============================================================
-// INISIALISASI - Fungsi utama yang menjalankan semua setup
+// INIT
 // ============================================================
 async function init() {
-    initThree();           // Setup Three.js (scene, camera, renderer)
-    setupEnvironment();    // Setup environment map (pencahayaan global)
-    setupLights();         // Setup lampu
-    createTextures();      // Buat tekstur custom
-    createParticles();     // Buat partikel love
-    createDust();          // Buat partikel debu
-    loadPredefinedImages(); // Load gambar dari folder images/
-    setupPostProcessing(); // Setup efek bloom
-    setupEvents();         // Setup event resize & keyboard
-    setupMusic();          // Setup tombol musik
-    setupCamToggle();      // Setup tombol kamera
+    if (initAttempted) return;
+    initAttempted = true;
+    try {
+        initThree();
+        setupEnvironment();
+        setupLights();
+        createTextures();
+        createParticles();
+        createDust();
+        loadPredefinedImages();
+        setupPostProcessing();
+        setupEvents();
+        setupMusic();
+        setupCamToggle();
 
-    // Inisialisasi MediaPipe hanya di desktop
-    if (!isMobile) {
-        await initMediaPipe();
-    } else {
-        // Di mobile, sembunyikan webcam secara default
-        document.getElementById('webcam-wrapper').classList.add('hidden');
+        if (!isMobile) {
+            await initMediaPipe();
+        } else if (webcamWrapper) {
+            webcamWrapper.classList.add('hidden');
+        }
+
+        if (loader) {
+            loader.style.opacity = '0';
+            setTimeout(() => { if (loader.parentNode) loader.parentNode.removeChild(loader); }, 800);
+        }
+        animate();
+    } catch (e) {
+        console.error('Init error:', e);
+        if (debugInfo) debugInfo.innerText = 'Gagal memuat aplikasi';
     }
-
-    // Hilangkan loading screen dengan fade out
-    const loader = document.getElementById('loader');
-    loader.style.opacity = 0;
-    setTimeout(() => loader.remove(), 800);
-
-    // Mulai animasi loop
-    animate();
 }
 
 // ============================================================
-// LOAD GAMBAR - Memuat gambar dari folder images/
+// IMAGE PRELOAD - Smart scan: HEAD request dulu, hindari 404
 // ============================================================
-function loadPredefinedImages() {
+const EXT_PRIORITY = ['jpg', 'jpeg', 'png', 'webp', 'bmp'];
+let imageScanInitiated = false;
+
+async function checkImageExists(url) {
+    try { const r = await fetch(url, { method: 'HEAD' }); return r.ok; }
+    catch { return false; }
+}
+
+async function loadPredefinedImages() {
     const loader = new THREE.TextureLoader();
-    CONFIG.preload.images.forEach(url => {
-        loader.load(url,
-            (t) => { t.colorSpace = THREE.SRGBColorSpace; addPhotoToScene(t); },
-            undefined, () => {}
-        );
-    });
-    // Scan otomatis file images/1.jpg sampai images/N.ext
-    // Mencoba ekstensi satu per satu secara berurutan per nomor foto,
-    // dan berhenti begitu satu ekstensi berhasil ditemukan (hindari 404 berlebihan).
-    if (CONFIG.preload.autoScanLocal) {
+    if (CONFIG.preload.images.length > 0) {
+        CONFIG.preload.images.forEach(url => {
+            loader.load(url, t => { t.colorSpace = THREE.SRGBColorSpace; addPhotoToScene(t); }, undefined, () => {});
+        });
+    }
+    if (CONFIG.preload.autoScanLocal && !imageScanInitiated) {
+        imageScanInitiated = true;
         for (let i = 1; i <= CONFIG.preload.scanCount; i++) {
-            tryLoadImageSequential(loader, i, 0);
+            for (const ext of EXT_PRIORITY) {
+                const path = `./images/${i}.${ext}`;
+                try {
+                    if (await checkImageExists(path)) {
+                        await new Promise(resolve => {
+                            loader.load(path,
+                                t => { t.colorSpace = THREE.SRGBColorSpace; addPhotoToScene(t, i); resolve(); },
+                                undefined, () => resolve()
+                            );
+                        });
+                        break;
+                    }
+                } catch { /* skip */ }
+            }
         }
     }
 }
 
-// Coba load images/{i}.{ext} secara berurutan sesuai CONFIG.preload.extensions.
-// Jika gagal, lanjut ke ekstensi berikutnya. Jika berhasil, berhenti (tidak lanjut scan ekstensi lain).
-function tryLoadImageSequential(loader, i, extIndex) {
-    const extensions = CONFIG.preload.extensions;
-    if (extIndex >= extensions.length) return; // Semua ekstensi sudah dicoba, tidak ada yang cocok
-
-    const path = `./images/${i}.${extensions[extIndex]}`;
-    loader.load(path,
-        (t) => {
-            t.colorSpace = THREE.SRGBColorSpace;
-            addPhotoToScene(t, i);
-            // Ekstensi ini cocok, tidak perlu coba ekstensi lain untuk foto ke-i
-        },
-        undefined,
-        () => {
-            // Gagal, coba ekstensi berikutnya untuk nomor foto yang sama
-            tryLoadImageSequential(loader, i, extIndex + 1);
-        }
-    );
-}
-
 // ============================================================
-// INISIALISASI THREE.JS - Scene, Camera, Renderer, Controls
+// THREE.JS SETUP
 // ============================================================
 function initThree() {
-    const container = document.getElementById('canvas-container');
-    
-    // Scene dengan fog untuk efek kedalaman
+    if (!canvasContainer) throw new Error('Canvas container not found');
     scene = new THREE.Scene();
     scene.background = new THREE.Color(CONFIG.colors.bg);
     scene.fog = new THREE.FogExp2(CONFIG.colors.bg, 0.01);
 
-    // Perspective Camera
     camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 1000);
     camera.position.set(0, 2, CONFIG.camera.z);
 
-    // WebGL Renderer dengan optimasi performa
-    // preserveDrawingBuffer:true diperlukan supaya fitur screenshot (toDataURL) selalu
-    // berhasil menangkap frame terkini di semua browser (tanpa ini, hasil capture bisa blank di beberapa browser).
-    renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false, powerPreference: "high-performance", preserveDrawingBuffer: true });
+    renderer = new THREE.WebGLRenderer({
+        antialias: !isMobile, alpha: false, powerPreference: "high-performance",
+        preserveDrawingBuffer: true // Diperlukan untuk screenshot toDataURL
+    });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2));
     renderer.toneMapping = THREE.ReinhardToneMapping;
     renderer.toneMappingExposure = 2.2;
-    container.appendChild(renderer.domElement);
+    canvasContainer.appendChild(renderer.domElement);
 
-    // OrbitControls untuk rotasi/zoom dengan touch di mobile
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
@@ -202,242 +189,223 @@ function initThree() {
     controls.maxDistance = 100;
     controls.autoRotate = false;
     controls.enableRotate = true;
-    // Nonaktifkan di desktop karena pakai hand tracking
     if (!isMobile) controls.enabled = false;
 
-    // Grup utama yang akan dirotasi
     mainGroup = new THREE.Group();
     scene.add(mainGroup);
+    photoMeshGroup = new THREE.Group();
 }
 
-// ============================================================
-// ENVIRONMENT MAP - Pencahayaan global dari ruangan
-// ============================================================
 function setupEnvironment() {
-    const pmremGenerator = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+    if (!renderer) return;
+    try {
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        sceneEnvironment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+        scene.environment = sceneEnvironment;
+        pmrem.dispose();
+    } catch (e) { console.warn('Environment failed:', e); }
 }
 
-// ============================================================
-// LAMPU - Setup berbagai sumber cahaya
-// ============================================================
 function setupLights() {
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));    // Cahaya ambient lembut
-    
-    // Lampu dalam dari dalam grup (ikut rotasi)
-    const innerLight = new THREE.PointLight(0xffaa00, 2, 20);
-    innerLight.position.set(0, 5, 0);
-    mainGroup.add(innerLight);
-    
-    // Spot light emas dari samping
-    const spotGold = new THREE.SpotLight(0xffcc66, 1200);
-    spotGold.position.set(30, 40, 40);
-    spotGold.angle = 0.5; spotGold.penumbra = 0.5;
-    scene.add(spotGold);
-    
-    // Spot light biru dari sisi lain
-    const spotBlue = new THREE.SpotLight(0x6688ff, 600);
-    spotBlue.position.set(-30, 20, -30);
-    scene.add(spotBlue);
-    
-    // Fill light dari depan
-    const fill = new THREE.DirectionalLight(0xffeebb, 0.8);
-    fill.position.set(0, 0, 50);
-    scene.add(fill);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const il = new THREE.PointLight(0xffaa00, 2, 20);
+    il.position.set(0, 5, 0);
+    mainGroup.add(il);
+    const sg = new THREE.SpotLight(0xffcc66, 1200);
+    sg.position.set(30, 40, 40); sg.angle = 0.5; sg.penumbra = 0.5;
+    scene.add(sg);
+    const sb = new THREE.SpotLight(0x6688ff, 600);
+    sb.position.set(-30, 20, -30);
+    scene.add(sb);
+    const fl = new THREE.DirectionalLight(0xffeebb, 0.8);
+    fl.position.set(0, 0, 50);
+    scene.add(fl);
 }
 
-// ============================================================
-// POST PROCESSING - Efek Bloom (cahaya menyilaukan)
-// ============================================================
+function createTextures() {
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 128;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, 128, 128);
+    ctx.fillStyle = '#880000';
+    ctx.beginPath();
+    for (let i = -128; i < 256; i += 32) {
+        ctx.moveTo(i, 0); ctx.lineTo(i + 32, 128); ctx.lineTo(i + 16, 128); ctx.lineTo(i - 16, 0);
+    }
+    ctx.fill();
+    if (canvasTexture) canvasTexture.dispose();
+    canvasTexture = new THREE.CanvasTexture(c);
+    canvasTexture.wrapS = canvasTexture.wrapT = THREE.RepeatWrapping;
+    canvasTexture.repeat.set(3, 3);
+}
+
 function setupPostProcessing() {
     const renderScene = new RenderPass(scene, camera);
-    const bloomPass = new UnrealBloomPass(
+    bloomPass = new UnrealBloomPass(
         new THREE.Vector2(window.innerWidth, window.innerHeight),
-        isMobile ? 1.0 : 1.5,  // Strength (lebih rendah di mobile)
-        0.4,                     // Radius
-        0.85                     // Threshold
+        isMobile ? 1.0 : 1.5, 0.4, 0.85
     );
     bloomPass.threshold = 0.7;
     bloomPass.strength = isMobile ? 1.0 : 1.5;
     bloomPass.radius = 0.2;
-    
     composer = new EffectComposer(renderer);
     composer.addPass(renderScene);
     composer.addPass(bloomPass);
 }
 
 // ============================================================
-// TEKSTUR - Membuat tekstur custom untuk batang pohon
-// ============================================================
-function createTextures() {
-    const canvas = document.createElement('canvas');
-    canvas.width = 128; canvas.height = 128;
-    const ctx = canvas.getContext('2d');
-    
-    // Background putih dengan garis merah
-    ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,128,128);
-    ctx.fillStyle = '#880000';
-    ctx.beginPath();
-    for(let i=-128; i<256; i+=32) {
-        ctx.moveTo(i,0); ctx.lineTo(i+32,128); ctx.lineTo(i+16,128); ctx.lineTo(i-16,0);
-    }
-    ctx.fill();
-    
-    caneTexture = new THREE.CanvasTexture(canvas);
-    caneTexture.wrapS = THREE.RepeatWrapping;
-    caneTexture.wrapT = THREE.RepeatWrapping;
-    caneTexture.repeat.set(3,3);
-}
-
-// ============================================================
-// KELAS PARTIKEL - Setiap objek di scene adalah turunan kelas ini
+// PARTICLE CLASS - Setiap particle punya material independen
 // ============================================================
 class Particle {
     constructor(mesh, type, isDust = false) {
         this.mesh = mesh;
-        this.type = type;           // 'RED_BOX' | 'GOLD_BOX' | 'PINK_SPHERE' | 'PHOTO' | 'DUST'
+        this.type = type;
         this.isDust = isDust;
-        this.posTree = new THREE.Vector3();    // Posisi saat mode TREE (bentuk love)
-        this.posScatter = new THREE.Vector3(); // Posisi saat mode SCATTER (tersebar)
-        this.baseScale = mesh.scale.x;         // Skala original
+        this.posTree = new THREE.Vector3();
+        this.posScatter = new THREE.Vector3();
+        this.baseScale = mesh.scale ? mesh.scale.x : 1;
         const speedMult = (type === 'PHOTO') ? 0.3 : 2.0;
         this.spinSpeed = new THREE.Vector3(
-            (Math.random()-0.5)*speedMult,
-            (Math.random()-0.5)*speedMult,
-            (Math.random()-0.5)*speedMult
+            (Math.random() - 0.5) * speedMult,
+            (Math.random() - 0.5) * speedMult,
+            (Math.random() - 0.5) * speedMult
         );
+        if (mesh.isMesh && mesh.material) {
+            this.mat = mesh.material;
+            this.origEmissiveIntensity = mesh.material.emissiveIntensity || 0;
+            this.origEmissive = mesh.material.emissive ? mesh.material.emissive.getHex() : 0;
+            this.origColor = mesh.material.color ? mesh.material.color.getHex() : 0;
+            this.origOpacity = mesh.material.opacity !== undefined ? mesh.material.opacity : 1;
+        } else {
+            this.mat = null;
+            this.origEmissiveIntensity = 0; this.origEmissive = 0; this.origColor = 0; this.origOpacity = 1;
+        }
         this.calculatePositions();
     }
 
-    // Hitung posisi untuk mode TREE (bentuk love) dan SCATTER (acak)
     calculatePositions() {
         if (this.type === 'PHOTO') {
-            // Foto: posisi tree diatur nanti oleh updatePhotoLayout()
-            this.posTree.set(0,0,0);
-            const rScatter = 18 + Math.random()*12;
-            const theta = Math.random()*Math.PI*2;
-            const phi = Math.acos(2*Math.random()-1);
-            this.posScatter.set(
-                rScatter*Math.sin(phi)*Math.cos(theta),
-                rScatter*Math.sin(phi)*Math.sin(theta),
-                rScatter*Math.cos(phi)
-            );
+            this.posTree.set(0, 0, 0);
+            const r = 18 + Math.random() * 12, theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1);
+            this.posScatter.set(r * Math.sin(phi) * Math.cos(theta), r * Math.sin(phi) * Math.sin(theta), r * Math.cos(phi));
             return;
         }
-        
-        // Bentuk LOVE menggunakan rumus parametric heart curve
-        const t = Math.random()*Math.PI*2;
-        const scale = 0.85;
-        const x = 14*Math.pow(Math.sin(t),3);
-        const y = 11*Math.cos(t)-4*Math.cos(2*t)-1.5*Math.cos(3*t)-0.5*Math.cos(4*t);
-        const z = Math.cos(t)*2+(Math.random()-0.5)*1.2;
-        this.posTree.set(x*scale, y*scale, z*scale);
-        
-        // Posisi scatter: tersebar di bola acak
-        let rScatter = this.isDust ? (15+Math.random()*20) : (10+Math.random()*15);
-        const sTheta = Math.random()*Math.PI*2;
-        const sPhi = Math.acos(2*Math.random()-1);
-        this.posScatter.set(
-            rScatter*Math.sin(sPhi)*Math.cos(sTheta),
-            rScatter*Math.sin(sPhi)*Math.sin(sTheta),
-            rScatter*Math.cos(sPhi)
+        const t = Math.random() * Math.PI * 2, sc = 0.85;
+        this.posTree.set(
+            14 * Math.pow(Math.sin(t), 3) * sc,
+            (11 * Math.cos(t) - 4 * Math.cos(2 * t) - 1.5 * Math.cos(3 * t) - 0.5 * Math.cos(4 * t)) * sc,
+            Math.cos(t) * 2 + (Math.random() - 0.5) * 1.2
         );
+        const r = this.isDust ? (15 + Math.random() * 20) : (10 + Math.random() * 15);
+        const st = Math.random() * Math.PI * 2, sp = Math.acos(2 * Math.random() - 1);
+        this.posScatter.set(r * Math.sin(sp) * Math.cos(st), r * Math.sin(sp) * Math.sin(st), r * Math.cos(sp));
     }
 
-    // Update posisi, rotasi, dan skala setiap frame
     update(dt, mode, focusTargetMesh) {
-        // Tentukan target posisi berdasarkan mode
         let target = this.posTree;
         if (mode === 'SCATTER') target = this.posScatter;
         else if (mode === 'FOCUS') {
             if (this.mesh === focusTargetMesh) {
-                // Foto yang di-focus dibawa ke depan kamera
-                const desiredWorldPos = new THREE.Vector3(0,2,35);
-                const invMatrix = new THREE.Matrix4().copy(mainGroup.matrixWorld).invert();
-                target = desiredWorldPos.applyMatrix4(invMatrix);
-            } else {
-                target = this.posScatter;
-            }
+                const wp = new THREE.Vector3(0, 2, 35);
+                wp.applyMatrix4(new THREE.Matrix4().copy(mainGroup.matrixWorld).invert());
+                target = wp;
+            } else target = this.posScatter;
         }
-        
-        // Lerp posisi dengan kecepatan berbeda
-        const lerpSpeed = (mode==='FOCUS' && this.mesh===focusTargetMesh) ? 5.0 : 2.0;
-        this.mesh.position.lerp(target, lerpSpeed*dt);
-        
-        // Rotasi berdasarkan mode
-        if (mode==='SCATTER') {
-            this.mesh.rotation.x += this.spinSpeed.x*dt;
-            this.mesh.rotation.y += this.spinSpeed.y*dt;
-            this.mesh.rotation.z += this.spinSpeed.z*dt;
-        } else if (mode==='TREE') {
-            if (this.type==='PHOTO') {
-                this.mesh.lookAt(0,this.mesh.position.y,0);
-                this.mesh.rotateY(Math.PI);
-            } else {
-                this.mesh.rotation.x = THREE.MathUtils.lerp(this.mesh.rotation.x,0,dt);
-                this.mesh.rotation.z = THREE.MathUtils.lerp(this.mesh.rotation.z,0,dt);
-                this.mesh.rotation.y += 0.5*dt;
-            }
+        const ls = (mode === 'FOCUS' && this.mesh === focusTargetMesh) ? 5.0 : 2.0;
+        this.mesh.position.lerp(target, ls * dt);
+
+        if (mode === 'SCATTER') {
+            this.mesh.rotation.x += this.spinSpeed.x * dt;
+            this.mesh.rotation.y += this.spinSpeed.y * dt;
+            this.mesh.rotation.z += this.spinSpeed.z * dt;
+        } else if (mode === 'TREE') {
+            if (this.type === 'PHOTO') { this.mesh.lookAt(0, this.mesh.position.y, 0); this.mesh.rotateY(Math.PI); }
+            else { this.mesh.rotation.x = THREE.MathUtils.lerp(this.mesh.rotation.x, 0, dt); this.mesh.rotation.z = THREE.MathUtils.lerp(this.mesh.rotation.z, 0, dt); this.mesh.rotation.y += 0.5 * dt; }
         }
-        if (mode==='FOCUS' && this.mesh===focusTargetMesh) {
-            this.mesh.lookAt(camera.position);
-        }
-        
-        // Skala dinamis
+        if (mode === 'FOCUS' && this.mesh === focusTargetMesh) this.mesh.lookAt(camera.position);
+
         let s = this.baseScale;
         if (this.isDust) {
-            s = this.baseScale*(0.8+0.4*Math.sin(clock.elapsedTime*4+this.mesh.id));
-            if (mode==='TREE') s = 0;  // Debu menghilang di mode love
-        } else if (mode==='SCATTER' && this.type==='PHOTO') {
-            s = this.baseScale*2.5;     // Foto lebih besar di mode scatter
-        } else if (mode==='FOCUS') {
-            if (this.mesh===focusTargetMesh) s = 4.5;  // Foto focus lebih besar
-            else s = this.baseScale*0.8;
+            s = this.baseScale * (0.8 + 0.4 * Math.sin(clock.elapsedTime * 4 + (this.mesh.id || 0)));
+            if (mode === 'TREE') s = 0;
+        } else if (mode === 'SCATTER' && this.type === 'PHOTO') s = this.baseScale * 2.5;
+        else if (mode === 'FOCUS') s = (this.mesh === focusTargetMesh) ? 4.5 : this.baseScale * 0.8;
+
+        const smile = STATE.face.smileIntensity;
+        if (smile > 0.01 && !this.isDust && this.type !== 'PHOTO' && this.mat) {
+            s *= 1 + smile * (CONFIG.face.particleScaleMultiplier - 1);
+            if (this.mat.emissiveIntensity !== undefined)
+                this.mat.emissiveIntensity = this.origEmissiveIntensity + smile * CONFIG.face.particleEmissiveMultiplier;
+            if (this.mat.color && smile > 0.3) {
+                const t = (smile - 0.3) / 0.7;
+                this.mat.color.lerpColors(new THREE.Color(this.origColor), new THREE.Color(CONFIG.face.colorShift), t * 0.4);
+            }
+        } else if (this.mat && this.type !== 'PHOTO' && !this.isDust) {
+            if (this.mat.emissiveIntensity !== undefined)
+                this.mat.emissiveIntensity = THREE.MathUtils.lerp(this.mat.emissiveIntensity, this.origEmissiveIntensity, 4 * dt);
+            if (this.mat.color && this.origColor)
+                this.mat.color.lerp(new THREE.Color(this.origColor), 4 * dt);
         }
-        this.mesh.scale.lerp(new THREE.Vector3(s,s,s), 4*dt);
+        if (this.isDust && smile > 0.01 && this.mat) {
+            s *= 1 + smile * 1.5;
+            this.mat.opacity = THREE.MathUtils.lerp(this.mat.opacity, 0.3 + smile * 0.6, 4 * dt);
+        } else if (this.isDust && this.mat) {
+            this.mat.opacity = THREE.MathUtils.lerp(this.mat.opacity, this.origOpacity, 4 * dt);
+        }
+        if (this.mesh.scale) this.mesh.scale.lerp(new THREE.Vector3(s, s, s), 4 * dt);
+    }
+
+    dispose() {
+        if (this.mesh && this.mesh.isMesh && this.mat) this.mat.dispose();
+        if (this.mesh && this.mesh.geometry) this.mesh.geometry.dispose();
+        if (this.mesh && this.mesh.parent) this.mesh.parent.remove(this.mesh);
     }
 }
 
 // ============================================================
-// UPDATE LAYOUT FOTO - Atur posisi foto membentuk love di mode TREE
+// PHOTO LAYOUT
 // ============================================================
 function updatePhotoLayout() {
-    const photos = particleSystem.filter(p => p.type==='PHOTO');
-    const count = photos.length;
-    if (count===0) return;
-    photos.forEach((p,i) => {
-        const t = (i/count)*Math.PI*2;
-        const scale = 0.85;
-        const x = 16*Math.pow(Math.sin(t),3);
-        const y = 13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t);
-        p.posTree.set(x*scale, y*scale, 0.5);
-        p.mesh.lookAt(0,0,50);
+    const photos = particleSystem.filter(p => p.type === 'PHOTO');
+    if (photos.length === 0) return;
+    photos.forEach((p, i) => {
+        const t = (i / photos.length) * Math.PI * 2, sc = 0.85;
+        p.posTree.set(16 * Math.pow(Math.sin(t), 3) * sc, (13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)) * sc, 0.5);
+        p.mesh.lookAt(0, 0, 50);
     });
 }
 
 // ============================================================
-// BUAT PARTIKEL LOVE - Kotak & bola yang membentuk love
+// CREATE PARTICLES
 // ============================================================
 function createParticles() {
-    const sphereGeo = new THREE.SphereGeometry(0.5,32,32);
-    const boxGeo = new THREE.BoxGeometry(0.55,0.55,0.55);
-    
-    // Material emas
-    const goldMat = new THREE.MeshStandardMaterial({ color:0xffd700, metalness:1.0, roughness:0.1, emissive:0xffaa00, emissiveIntensity:0.2 });
-    // Material merah (paling banyak)
-    const redMat = new THREE.MeshStandardMaterial({ color:0xff0033, metalness:0.15, roughness:0.05, clearcoat:1.0, clearcoatRoughness:0.03, emissive:0x990000, emissiveIntensity:0.35 });
-    // Material pink
-    const pinkMat = new THREE.MeshPhysicalMaterial({ color:0xff66aa, metalness:0.1, roughness:0.2, clearcoat:1.0, emissive:0xff0066, emissiveIntensity:0.3 });
-    
-    for (let i=0; i<CONFIG.particles.count; i++) {
+    const sphereGeo = new THREE.SphereGeometry(0.5, 32, 32);
+    const boxGeo = new THREE.BoxGeometry(0.55, 0.55, 0.55);
+
+    for (let i = 0; i < CONFIG.particles.count; i++) {
         const rand = Math.random();
         let mesh, type;
-        if (rand<0.60) { mesh = new THREE.Mesh(boxGeo, redMat); type='RED_BOX'; }
-        else if (rand<0.85) { mesh = new THREE.Mesh(boxGeo, goldMat); type='GOLD_BOX'; }
-        else { mesh = new THREE.Mesh(sphereGeo, pinkMat); type='PINK_SPHERE'; }
-        const s = 0.4+Math.random()*0.5;
-        mesh.scale.set(s,s,s);
-        mesh.rotation.set(Math.random()*6, Math.random()*6, Math.random()*6);
+        if (rand < 0.60) {
+            mesh = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({
+                color: 0xff0033, metalness: 0.15, roughness: 0.05, clearcoat: 1.0,
+                clearcoatRoughness: 0.03, emissive: 0x990000, emissiveIntensity: 0.35
+            }));
+            type = 'RED_BOX';
+        } else if (rand < 0.85) {
+            mesh = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({
+                color: 0xffd700, metalness: 1.0, roughness: 0.1, emissive: 0xffaa00, emissiveIntensity: 0.2
+            }));
+            type = 'GOLD_BOX';
+        } else {
+            mesh = new THREE.Mesh(sphereGeo, new THREE.MeshPhysicalMaterial({
+                color: 0xff66aa, metalness: 0.1, roughness: 0.2, clearcoat: 1.0,
+                emissive: 0xff0066, emissiveIntensity: 0.3
+            }));
+            type = 'PINK_SPHERE';
+        }
+        const s = 0.4 + Math.random() * 0.5;
+        mesh.scale.set(s, s, s);
+        mesh.rotation.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
         mainGroup.add(mesh);
         particleSystem.push(new Particle(mesh, type, false));
     }
@@ -445,104 +413,242 @@ function createParticles() {
 }
 
 // ============================================================
-// BUAT DEBU - Partikel kecil yang melayang di mode scatter
+// CREATE DUST
 // ============================================================
 function createDust() {
-    const geo = new THREE.TetrahedronGeometry(0.08,0);
-    const mat = new THREE.MeshBasicMaterial({ color:0xffcccc, transparent:true, opacity:0.6 });
-    for(let i=0; i<CONFIG.particles.dustCount; i++) {
+    const geo = new THREE.TetrahedronGeometry(0.08, 0);
+    for (let i = 0; i < CONFIG.particles.dustCount; i++) {
+        const mat = new THREE.MeshBasicMaterial({ color: 0xffcccc, transparent: true, opacity: 0.6 });
         const mesh = new THREE.Mesh(geo, mat);
-        mesh.scale.setScalar(0.5+Math.random());
+        mesh.scale.setScalar(0.5 + Math.random());
         mainGroup.add(mesh);
-        particleSystem.push(new Particle(mesh,'DUST',true));
+        particleSystem.push(new Particle(mesh, 'DUST', true));
     }
 }
 
 // ============================================================
-// TAMBAH FOTO - Membuat mesh foto dengan bingkai
+// ADD PHOTO
 // ============================================================
 function addPhotoToScene(texture, imgNumber = null) {
-    const frameMat = new THREE.MeshStandardMaterial({ color:CONFIG.colors.frameColor, metalness:1.0, roughness:0.1 });
-    let width=1.2, height=1.2;
+    const frameMat = new THREE.MeshStandardMaterial({ color: CONFIG.colors.frameColor, metalness: 1.0, roughness: 0.1 });
+    let width = 1.2, height = 1.2;
     if (texture.image) {
-        const aspect = texture.image.width/texture.image.height;
-        if (aspect>1) height=width/aspect; else width=height*aspect;
+        const aspect = texture.image.width / texture.image.height;
+        if (aspect > 1) height = width / aspect; else width = height * aspect;
     }
-    const frameGeo = new THREE.BoxGeometry(1.4,1.4,0.05);
-    const frame = new THREE.Mesh(frameGeo, frameMat);
-    const photoGeo = new THREE.PlaneGeometry(width, height);
-    const photoMat = new THREE.MeshBasicMaterial({ map:texture, side:THREE.DoubleSide });
-    // Nonaktifkan tone mapping khusus untuk foto: renderer.toneMappingExposure di-set tinggi (2.2)
-    // supaya efek bloom partikel dramatis, tapi ini bikin foto jadi overexposed/putih.
-    // toneMapped:false membuat foto tampil dengan warna asli, tidak terpengaruh exposure global.
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.4, 0.05), frameMat);
+    const photoMat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
     photoMat.toneMapped = false;
-    const photo = new THREE.Mesh(photoGeo, photoMat);
+    const photo = new THREE.Mesh(new THREE.PlaneGeometry(width, height), photoMat);
     photo.position.z = 0.04;
-    
-    // Grup berisi frame + foto
     const group = new THREE.Group();
-    group.add(frame); group.add(photo);
-    frame.scale.set(width/1.2, height/1.2, 1);
-    const s=0.8; group.scale.set(s,s,s);
-
-    // Simpan caption (jika ada) di userData grup, dipakai saat mode FOCUS
+    group.add(frame);
+    group.add(photo);
+    frame.scale.set(width / 1.2, height / 1.2, 1);
+    group.scale.set(0.8, 0.8, 0.8);
     group.userData.caption = (imgNumber !== null && CONFIG.captions[imgNumber]) ? CONFIG.captions[imgNumber] : '';
-    
     photoMeshGroup.add(group);
-    particleSystem.push(new Particle(group,'PHOTO',false));
+    particleSystem.push(new Particle(group, 'PHOTO', false));
     updatePhotoLayout();
 }
 
 // ============================================================
-// MEDIAPIPE (DESKTOP ONLY) - Hand tracking untuk kontrol gerakan tangan
+// MEDIAPIPE - Hand & Face tracking
 // ============================================================
 async function initMediaPipe() {
-    video = document.getElementById('webcam');
-    const constraints = { video: { width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:30} } };
+    video = $('webcam');
+    if (!video) return;
     try {
-        // Load MediaPipe vision tasks
         const vision = await FilesetResolver.forVisionTasks(
             "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
         );
-        // Buat HandLandmarker untuk deteksi 21 titik tangan
         handLandmarker = await HandLandmarker.createFromOptions(vision, {
-            baseOptions: {
-                modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
-                delegate: "GPU"
-            },
-            runningMode: "VIDEO",
-            numHands: 1
+            baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+            runningMode: "VIDEO", numHands: 1
         });
-        // Akses webcam
-        if (navigator.mediaDevices?.getUserMedia) {
-            const stream = await navigator.mediaDevices.getUserMedia(constraints);
-            video.srcObject = stream;
-            video.addEventListener("loadeddata", predictWebcam);
-            debugInfo.innerText = "Kamera aktif. Tunjukkan tangan.";
+        if (CONFIG.face.enabled) {
+            try {
+                faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+                    baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`, delegate: "GPU" },
+                    runningMode: "VIDEO", numFaces: 1,
+                    outputFaceBlendshapes: true,
+                    outputFacialTransformationMatrixes: false,
+                });
+            } catch (e) { console.warn("FaceLandmarker error:", e); faceLandmarker = null; }
         }
-    } catch(e) {
+        if (overlayCanvas) { overlayCanvas.width = 640; overlayCanvas.height = 480; }
+        if (navigator.mediaDevices?.getUserMedia) {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } } });
+            video.srcObject = stream;
+            video.addEventListener("loadeddata", () => {
+                if (overlayCanvas) { overlayCanvas.width = video.videoWidth || 640; overlayCanvas.height = video.videoHeight || 480; }
+                predictWebcam();
+            });
+            if (debugInfo) debugInfo.innerText = "Kamera aktif. Tunjukkan tangan & wajah.";
+        }
+    } catch (e) {
         console.warn("Webcam/MediaPipe error:", e);
-        debugInfo.innerText = "Kamera tidak tersedia";
-        document.getElementById('webcam-wrapper').classList.add('hidden');
+        if (debugInfo) debugInfo.innerText = "Kamera tidak tersedia";
+        if (webcamWrapper) webcamWrapper.classList.add('hidden');
     }
 }
 
-let lastVideoTime = -1;
-// Loop prediksi webcam setiap frame
+let lastVideoTime = -1, lastHandResult = null, lastFaceResult = null;
+
 async function predictWebcam() {
-    if (video.currentTime !== lastVideoTime) {
-        lastVideoTime = video.currentTime;
-        if (handLandmarker) {
-            const result = handLandmarker.detectForVideo(video, performance.now());
-            processGestures(result);
+    if (!video || video.currentTime === lastVideoTime) { requestAnimationFrame(predictWebcam); return; }
+    lastVideoTime = video.currentTime;
+    if (overlayCtx) overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+    if (handLandmarker) {
+        const r = handLandmarker.detectForVideo(video, performance.now());
+        processGestures(r);
+        lastHandResult = r;
+    }
+    if (faceLandmarker && CONFIG.face.enabled) {
+        try {
+            const r = faceLandmarker.detectForVideo(video, performance.now());
+            processFaceGestures(r);
+            lastFaceResult = r;
+        } catch (e) { /* ignore */ }
+    }
+    if (!lastHandResult || !lastHandResult.landmarks || lastHandResult.landmarks.length === 0) lastHandResult = null;
+    if (!lastFaceResult || !lastFaceResult.faceLandmarks || lastFaceResult.faceLandmarks.length === 0) lastFaceResult = null;
+
+    if (overlayCtx) {
+        if (lastHandResult && lastHandResult.landmarks && lastHandResult.landmarks.length > 0)
+            drawHandOverlay(lastHandResult.landmarks[0]);
+        if (lastFaceResult && lastFaceResult.faceLandmarks && lastFaceResult.faceLandmarks.length > 0)
+            drawFaceOverlay(lastFaceResult.faceLandmarks[0]);
+        if (modeIndicator) {
+            overlayCtx.fillStyle = 'rgba(255,255,255,0.5)';
+            overlayCtx.font = '10px monospace';
+            overlayCtx.fillText(modeIndicator.textContent, 8, 16);
         }
     }
     requestAnimationFrame(predictWebcam);
 }
 
-// Berpindah ke foto berikutnya (dir=1) atau sebelumnya (dir=-1) saat mode FOCUS aktif
+// ============================================================
+// FACE GESTURE - Blendshapes + geometric
+// ============================================================
+function processFaceGestures(result) {
+    const now = performance.now();
+
+    if (result.faceLandmarks && result.faceLandmarks.length > 0) {
+        STATE.face.detected = true;
+        const lm = result.faceLandmarks[0];
+
+        let smileFromBlendshapes = 0;
+        if (result.faceBlendshapes && result.faceBlendshapes.length > 0) {
+            const blendshapes = result.faceBlendshapes[0];
+            for (const bs of blendshapes) {
+                if (bs.categoryName === 'mouthSmileLeft' || bs.categoryName === 'mouthSmileRight') {
+                    smileFromBlendshapes = Math.max(smileFromBlendshapes, bs.score);
+                }
+            }
+        }
+
+        const leftCorner = lm[61], rightCorner = lm[291];
+        const upperLip = lm[13], lowerLip = lm[14];
+        const leftEye = lm[33], rightEye = lm[263];
+
+        const faceWidth = Math.hypot(rightEye.x - leftEye.x, rightEye.y - leftEye.y, rightEye.z - leftEye.z);
+        if (faceWidth < 0.01) return;
+
+        const mouthWidth = Math.hypot(rightCorner.x - leftCorner.x, rightCorner.y - leftCorner.y, rightCorner.z - leftCorner.z);
+        const mouthHeight = Math.hypot(lowerLip.x - upperLip.x, lowerLip.y - upperLip.y, lowerLip.z - upperLip.z);
+        const normalizedMouthWidth = mouthWidth / faceWidth;
+        const mouthOpenRatio = mouthHeight / faceWidth;
+
+        const geometricSmile = Math.max(0, Math.min(1, (normalizedMouthWidth - 0.38) / 0.35));
+        let finalIntensity = smileFromBlendshapes > 0 ? smileFromBlendshapes : geometricSmile;
+        if (mouthOpenRatio > 0.08) finalIntensity = Math.min(1, finalIntensity + 0.3);
+
+        STATE.face.targetIntensity = finalIntensity;
+        STATE.face.lastProcessed = now;
+
+        if (finalIntensity > CONFIG.face.smileThreshold && debugInfo) {
+            debugInfo.innerText = `😊 Senyum ${Math.round(finalIntensity * 100)}% | ${STATE.mode}`;
+        }
+    } else {
+        STATE.face.detected = false;
+        STATE.face.targetIntensity = 0;
+    }
+}
+
+// ============================================================
+// OVERLAY DRAWING
+// ============================================================
+const HAND_CONNECTIONS = [
+    [0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8],
+    [0, 9], [9, 10], [10, 11], [11, 12], [0, 13], [13, 14], [14, 15], [15, 16],
+    [0, 17], [17, 18], [18, 19], [19, 20], [5, 9], [9, 13], [13, 17]
+];
+
+const FACE_LANDMARK_INDICES = [
+    0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,
+    17,18,19,20,21, 22,23,24,25,26,
+    27,28,29,30,31,32,33,34,35,
+    36,37,38,39,40,41, 42,43,44,45,46,47,
+    48,49,50,51,52,53,54,55,56,57,58,59,
+    60,61,62,63,64,65,66,67,
+    68,69,70,71,72,73,
+];
+
+const FACE_CONNECTIONS = [
+    [0,1],[1,2],[2,3],[3,4],[4,5],[5,6],[6,7],[7,8],[8,9],[9,10],[10,11],[11,12],[12,13],[13,14],[14,15],[15,16],
+    [17,18],[18,19],[19,20],[20,21],[22,23],[23,24],[24,25],[25,26],
+    [27,28],[28,29],[29,30],[31,32],[32,33],[33,34],[34,35],
+    [36,37],[37,38],[38,39],[39,40],[40,41],[41,36],
+    [42,43],[43,44],[44,45],[45,46],[46,47],[47,42],
+    [48,49],[49,50],[50,51],[51,52],[52,53],[53,54],[54,55],[55,56],[56,57],[57,58],[58,59],[59,48],
+    [60,61],[61,62],[62,63],[63,64],[64,65],[65,66],[66,67],[67,60],
+    [27,48],[27,59]
+];
+
+function drawHandOverlay(lm) {
+    if (!overlayCtx || !overlayCanvas) return;
+    const ctx = overlayCtx, w = overlayCanvas.width, h = overlayCanvas.height;
+    const pts = lm.map(p => ({ x: (1 - p.x) * w, y: p.y * h }));
+    ctx.strokeStyle = 'rgba(255,200,100,0.7)';
+    ctx.lineWidth = 2;
+    HAND_CONNECTIONS.forEach(([i, j]) => {
+        if (pts[i] && pts[j]) { ctx.beginPath(); ctx.moveTo(pts[i].x, pts[i].y); ctx.lineTo(pts[j].x, pts[j].y); ctx.stroke(); }
+    });
+    pts.forEach((p, idx) => {
+        const isTip = [4, 8, 12, 16, 20].includes(idx);
+        ctx.fillStyle = isTip ? '#ff4488' : '#ffcc44';
+        ctx.beginPath(); ctx.arc(p.x, p.y, isTip ? 4 : 2.5, 0, Math.PI * 2); ctx.fill();
+        if (isTip) { ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.font = '8px monospace'; ctx.fillText(idx, p.x + 4, p.y - 4); }
+    });
+}
+
+function drawFaceOverlay(lm) {
+    if (!overlayCtx || !overlayCanvas) return;
+    const ctx = overlayCtx, w = overlayCanvas.width, h = overlayCanvas.height;
+    const pts = lm.map(p => ({ x: (1 - p.x) * w, y: p.y * h }));
+    ctx.strokeStyle = 'rgba(100,200,255,0.4)';
+    ctx.lineWidth = 1;
+    FACE_CONNECTIONS.forEach(([i, j]) => {
+        if (pts[i] && pts[j]) { ctx.beginPath(); ctx.moveTo(pts[i].x, pts[i].y); ctx.lineTo(pts[j].x, pts[j].y); ctx.stroke(); }
+    });
+    FACE_LANDMARK_INDICES.forEach(idx => {
+        if (!pts[idx]) return;
+        const p = pts[idx];
+        if (idx >= 48 && idx <= 67) ctx.fillStyle = `rgba(255,100,150,${idx >= 60 ? 0.6 : 0.4})`;
+        else if (idx >= 36 && idx <= 47) ctx.fillStyle = 'rgba(100,255,200,0.5)';
+        else if (idx >= 27 && idx <= 35) ctx.fillStyle = 'rgba(200,200,100,0.4)';
+        else ctx.fillStyle = 'rgba(100,200,255,0.3)';
+        ctx.beginPath(); ctx.arc(p.x, p.y, (idx >= 48 && idx <= 67) ? 1.5 : 1, 0, Math.PI * 2); ctx.fill();
+    });
+}
+
+// ============================================================
+// NAVIGATE PHOTO
+// ============================================================
 function navigatePhoto(dir) {
-    const photos = particleSystem.filter(p => p.type==='PHOTO');
+    const photos = particleSystem.filter(p => p.type === 'PHOTO');
     if (!photos.length) return;
     let idx = photos.findIndex(p => p.mesh === STATE.focusTarget);
     if (idx === -1) idx = 0;
@@ -552,45 +658,38 @@ function navigatePhoto(dir) {
 }
 
 // ============================================================
-// PROSES GESTUR TANGAN - Deteksi posisi jari untuk ganti mode
+// GESTURE PROCESSING
 // ============================================================
 function processGestures(result) {
-    if (result.landmarks && result.landmarks.length>0) {
+    if (result.landmarks && result.landmarks.length > 0) {
         STATE.hand.detected = true;
-        const lm = result.landmarks[0];  // Tangan pertama
-        
-        // Posisi tengah telapak tangan (landmark 9) untuk kontrol rotasi
-        STATE.hand.x = (lm[9].x-0.5)*2;
-        STATE.hand.y = (lm[9].y-0.5)*2;
-        
-        const thumb=lm[4], index=lm[8], wrist=lm[0], middleMCP=lm[9];
-        const handSize = Math.hypot(middleMCP.x-wrist.x, middleMCP.y-wrist.y);
-        if (handSize<0.02) return;
-        
-        // Hitung rata-rata jarak ujung jari ke pergelangan
-        const tips=[lm[8],lm[12],lm[16],lm[20]];
-        let avgTipDist=0;
-        tips.forEach(t => avgTipDist += Math.hypot(t.x-wrist.x, t.y-wrist.y));
-        avgTipDist/=4;
-        
-        const pinchDist = Math.hypot(thumb.x-index.x, thumb.y-index.y);
-        const extensionRatio = avgTipDist/handSize;    // Rasio bukaan jari
-        const pinchRatio = pinchDist/handSize;         // Rasio cubitan
-        
-        debugInfo.innerText = `Ext:${extensionRatio.toFixed(2)} Pinch:${pinchRatio.toFixed(2)} | ${STATE.mode}`;
+        const lm = result.landmarks[0];
+        STATE.hand.x = (lm[9].x - 0.5) * 2;
+        STATE.hand.y = (lm[9].y - 0.5) * 2;
 
-        // --- DETEKSI SWIPE: gerak tangan cepat kiri/kanan saat mode FOCUS -> ganti foto ---
+        const thumb = lm[4], index = lm[8], wrist = lm[0], middleMCP = lm[9];
+        const handSize = Math.hypot(middleMCP.x - wrist.x, middleMCP.y - wrist.y);
+        if (handSize < 0.02) return;
+
+        const tips = [lm[8], lm[12], lm[16], lm[20]];
+        let avgTipDist = 0;
+        tips.forEach(t => avgTipDist += Math.hypot(t.x - wrist.x, t.y - wrist.y));
+        avgTipDist /= 4;
+
+        const pinchDist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
+        const extensionRatio = avgTipDist / handSize;
+        const pinchRatio = pinchDist / handSize;
+
+        if (debugInfo && STATE.face.smileIntensity <= CONFIG.face.smileThreshold)
+            debugInfo.innerText = `Ext:${extensionRatio.toFixed(2)} Pinch:${pinchRatio.toFixed(2)} | ${STATE.mode}`;
+
         const now = performance.now();
         if (STATE.mode === 'FOCUS' && prevHandX !== null) {
             const dt = now - prevHandTime;
-            // dt dibatasi <400ms supaya gap besar (misal tangan sempat hilang lalu muncul lagi) tidak dianggap swipe
             if (dt > 0 && dt < 400) {
-                const velocity = (STATE.hand.x - prevHandX) / dt;
-                if (Math.abs(velocity) > SWIPE_VELOCITY_THRESHOLD && now > swipeCooldownUntil) {
-                    // Catatan: webcam biasanya mirrored, jadi arah swipe di sini mengikuti
-                    // arah gerak tangan apa adanya (tanpa dibalik). Kalau terasa terbalik dari
-                    // perspektif user, tinggal balik tanda velocity di baris di bawah.
-                    navigatePhoto(velocity > 0 ? 1 : -1);
+                const vel = (STATE.hand.x - prevHandX) / dt;
+                if (Math.abs(vel) > SWIPE_VELOCITY_THRESHOLD && now > swipeCooldownUntil) {
+                    navigatePhoto(vel > 0 ? 1 : -1);
                     swipeCooldownUntil = now + SWIPE_COOLDOWN_MS;
                 }
             }
@@ -598,60 +697,49 @@ function processGestures(result) {
         prevHandX = STATE.hand.x;
         prevHandTime = now;
 
-        // --- EASTER EGG: Deteksi peace sign (✌️) - telunjuk & tengah lurus, manis & kelingking menekuk ---
-        const wristPt = wrist;
-        const indexDist = Math.hypot(lm[8].x-wristPt.x, lm[8].y-wristPt.y)/handSize;
-        const middleDist = Math.hypot(lm[12].x-wristPt.x, lm[12].y-wristPt.y)/handSize;
-        const ringDist = Math.hypot(lm[16].x-wristPt.x, lm[16].y-wristPt.y)/handSize;
-        const pinkyDist = Math.hypot(lm[20].x-wristPt.x, lm[20].y-wristPt.y)/handSize;
-        const isPeaceSign = indexDist>1.3 && middleDist>1.3 && ringDist<1.1 && pinkyDist<1.1;
+        const indexDist = Math.hypot(lm[8].x - wrist.x, lm[8].y - wrist.y) / handSize;
+        const middleDist = Math.hypot(lm[12].x - wrist.x, lm[12].y - wrist.y) / handSize;
+        const ringDist = Math.hypot(lm[16].x - wrist.x, lm[16].y - wrist.y) / handSize;
+        const pinkyDist = Math.hypot(lm[20].x - wrist.x, lm[20].y - wrist.y) / handSize;
+        const isPeaceSign = indexDist > 1.3 && middleDist > 1.3 && ringDist < 1.1 && pinkyDist < 1.1;
 
         if (isPeaceSign && now > captureCooldownUntil) {
             if (peaceSignStartTime === null) peaceSignStartTime = now;
-            const heldMs = now - peaceSignStartTime;
-            const progress = Math.min(heldMs / PEACE_HOLD_MS, 1);
-            debugInfo.innerText = `✌️ Menahan untuk screenshot... ${Math.round(progress*100)}%`;
-            if (heldMs >= PEACE_HOLD_MS) {
-                captureRequested = true;              // Diproses di animate() setelah frame ini di-render
+            const held = now - peaceSignStartTime;
+            const progress = Math.min(held / PEACE_HOLD_MS, 1);
+            if (debugInfo) debugInfo.innerText = `✌️ ${Math.round(progress * 100)}%`;
+            if (held >= PEACE_HOLD_MS) {
+                captureRequested = true;
                 captureCooldownUntil = now + CAPTURE_COOLDOWN_MS;
                 peaceSignStartTime = null;
             }
-        } else {
-            peaceSignStartTime = null;
-        }
-        
-        // Logika gestur (dilewati saat peace sign terdeteksi, supaya mode yang sedang aktif
-        // -misal FOCUS ke foto tertentu- tidak berubah selagi user menahan gesture screenshot):
-        // - Tangan tertutup (extensionRatio < 1.5) -> Mode TREE (love)
-        // - Cubit (pinchRatio < 0.35) -> Mode FOCUS (zoom foto acak)
-        // - Tangan terbuka (extensionRatio > 1.7) -> Mode SCATTER
+        } else peaceSignStartTime = null;
+
         if (!isPeaceSign) {
-            if (extensionRatio<1.5) {
-                STATE.mode='TREE'; STATE.focusTarget=null;
-            } else if (pinchRatio<0.35) {
-                if (STATE.mode!=='FOCUS') {
-                    STATE.mode='FOCUS';
-                    const photos=particleSystem.filter(p=>p.type==='PHOTO');
-                    if (photos.length) STATE.focusTarget=photos[Math.floor(Math.random()*photos.length)].mesh;
+            if (extensionRatio < 1.5) {
+                STATE.mode = 'TREE'; STATE.focusTarget = null;
+            } else if (pinchRatio < 0.35) {
+                if (STATE.mode !== 'FOCUS') {
+                    STATE.mode = 'FOCUS';
+                    const photos = particleSystem.filter(p => p.type === 'PHOTO');
+                    if (photos.length) {
+                        STATE.focusTarget = photos[Math.floor(Math.random() * photos.length)].mesh;
+                    }
                 }
-            } else if (extensionRatio>1.7) {
-                STATE.mode='SCATTER'; STATE.focusTarget=null;
+            } else if (extensionRatio > 1.7) {
+                STATE.mode = 'SCATTER'; STATE.focusTarget = null;
             }
         }
         updateModeIndicator();
-    } else {
-        STATE.hand.detected = false;
-        debugInfo.innerText = "Tangan tidak terdeteksi";
-    }
+    } else STATE.hand.detected = false;
 }
 
 // ============================================================
-// TOUCH CONTROLS (MOBILE) - Kontrol sentuh untuk HP
+// TOUCH CONTROLS (MOBILE)
 // ============================================================
 function setupTouchControls() {
     const canvas = renderer.domElement;
-
-    // Single tap -> ganti mode (TREE -> SCATTER -> FOCUS)
+    if (!canvas) return;
     let tapTimeout = null;
     canvas.addEventListener('touchstart', (e) => {
         if (e.touches.length === 1) {
@@ -659,32 +747,24 @@ function setupTouchControls() {
             STATE.touch.startX = e.touches[0].clientX;
             STATE.touch.startY = e.touches[0].clientY;
         } else if (e.touches.length === 2) {
-            STATE.touch.pinchDist = Math.hypot(
-                e.touches[0].clientX - e.touches[1].clientX,
-                e.touches[0].clientY - e.touches[1].clientY
-            );
+            STATE.touch.pinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
         }
     }, { passive: true });
-
     canvas.addEventListener('touchend', (e) => {
         if (tapTimeout !== null && e.changedTouches.length === 1) {
             const dx = e.changedTouches[0].clientX - STATE.touch.startX;
             const dy = e.changedTouches[0].clientY - STATE.touch.startY;
-            if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {  // Pastikan bukan drag/geser -> tap biasa
-                // Cycle mode
-                const modes = ['TREE','SCATTER','FOCUS'];
+            if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
+                const modes = ['TREE', 'SCATTER', 'FOCUS'];
                 const idx = modes.indexOf(STATE.mode);
-                const next = modes[(idx+1)%modes.length];
+                const next = modes[(idx + 1) % modes.length];
                 STATE.mode = next;
-                if (next==='FOCUS') {
-                    const photos = particleSystem.filter(p=>p.type==='PHOTO');
-                    if (photos.length) STATE.focusTarget = photos[Math.floor(Math.random()*photos.length)].mesh;
-                } else {
-                    STATE.focusTarget = null;
-                }
+                if (next === 'FOCUS') {
+                    const photos = particleSystem.filter(p => p.type === 'PHOTO');
+                    if (photos.length) { STATE.focusTarget = photos[Math.floor(Math.random() * photos.length)].mesh; }
+                } else STATE.focusTarget = null;
                 updateModeIndicator();
             } else if (STATE.mode === 'FOCUS' && Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) {
-                // Swipe horizontal saat mode FOCUS -> ganti foto (konsisten dengan swipe gesture tangan)
                 navigatePhoto(dx < 0 ? 1 : -1);
             }
         }
@@ -692,200 +772,151 @@ function setupTouchControls() {
 }
 
 // ============================================================
-// UPDATE INDIKATOR MODE - Update teks mode di layar
+// UI UPDATES
 // ============================================================
 function updateModeIndicator() {
+    if (!modeIndicator) return;
     const labels = { TREE: '❤ LOVE', SCATTER: '✨ SCATTER', FOCUS: '🔍 FOCUS' };
     modeIndicator.textContent = labels[STATE.mode] || STATE.mode;
     updatePhotoCaption();
 }
 
-// ============================================================
-// UPDATE CAPTION FOTO - Tampilkan caption saat mode FOCUS aktif
-// ============================================================
 function updatePhotoCaption() {
-    const captionEl = document.getElementById('photo-caption');
-    if (!captionEl) return;
+    if (!photoCaption) return;
     const caption = (STATE.mode === 'FOCUS' && STATE.focusTarget) ? STATE.focusTarget.userData.caption : '';
-    if (caption) {
-        captionEl.textContent = caption;
-        captionEl.classList.add('visible');
-    } else {
-        captionEl.classList.remove('visible');
-    }
+    if (caption) { photoCaption.textContent = caption; photoCaption.classList.add('visible'); }
+    else photoCaption.classList.remove('visible');
 }
 
 // ============================================================
-// SETUP EVENTS - Resize window & keyboard shortcuts
+// EVENTS
 // ============================================================
 function setupEvents() {
     window.addEventListener('resize', () => {
-        camera.aspect = window.innerWidth/window.innerHeight;
+        const w = window.innerWidth, h = window.innerHeight;
+        camera.aspect = w / h;
         camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        composer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setSize(w, h);
+        if (composer) composer.setSize(w, h);
+        if (bloomPass) bloomPass.resolution.set(w, h);
     });
-    
-    // Keyboard shortcuts (PC)
     window.addEventListener('keydown', (e) => {
         const k = e.key.toLowerCase();
-        if (k==='h') {
-            document.getElementById('webcam-wrapper').classList.toggle('hidden');
-        }
-        if (k==='t') { STATE.mode='TREE'; STATE.focusTarget=null; updateModeIndicator(); }
-        if (k==='s') { STATE.mode='SCATTER'; STATE.focusTarget=null; updateModeIndicator(); }
-        if (k==='f') {
-            STATE.mode='FOCUS';
-            const photos=particleSystem.filter(p=>p.type==='PHOTO');
-            if (photos.length) STATE.focusTarget=photos[Math.floor(Math.random()*photos.length)].mesh;
+        if (k === 'h' && webcamWrapper) webcamWrapper.classList.toggle('hidden');
+        if (k === 't') { STATE.mode = 'TREE'; STATE.focusTarget = null; updateModeIndicator(); }
+        if (k === 's') { STATE.mode = 'SCATTER'; STATE.focusTarget = null; updateModeIndicator(); }
+        if (k === 'f') {
+            STATE.mode = 'FOCUS';
+            const photos = particleSystem.filter(p => p.type === 'PHOTO');
+            if (photos.length) { STATE.focusTarget = photos[Math.floor(Math.random() * photos.length)].mesh; }
             updateModeIndicator();
         }
     });
-
-    // Touch controls untuk mobile
     if (isMobile) setupTouchControls();
 }
 
 // ============================================================
-// SETUP MUSIK - Playlist multi-lagu dengan play/pause & next
+// MUSIC
 // ============================================================
 function setupMusic() {
-    const bgm = document.getElementById('bgm');
-    const playBtn = document.getElementById('play-btn');
-    const nextBtn = document.getElementById('next-track-btn');
-    const trackNameEl = document.getElementById('track-name');
-
-    // Muat lagu sesuai STATE.trackIndex, opsional langsung play
+    if (!bgmAudio || !playBtn) return;
     function loadTrack(index, autoplay) {
-        const playlist = CONFIG.playlist;
-        if (!playlist.length) return;
-        STATE.trackIndex = ((index % playlist.length) + playlist.length) % playlist.length; // wrap aman
-        const track = playlist[STATE.trackIndex];
-        bgm.src = track.src;
+        const pl = CONFIG.playlist;
+        if (!pl.length) return;
+        STATE.trackIndex = ((index % pl.length) + pl.length) % pl.length;
+        const track = pl[STATE.trackIndex];
+        bgmAudio.src = track.src;
         if (trackNameEl) trackNameEl.textContent = track.name;
-        if (autoplay) bgm.play().catch(()=>{});
+        if (autoplay) bgmAudio.play().catch(() => {});
     }
-
     loadTrack(0, false);
-
     playBtn.addEventListener('click', () => {
-        if (bgm.paused) { bgm.play(); playBtn.innerText = '⏸ Pause'; }
-        else { bgm.pause(); playBtn.innerText = '🎵 Musik'; }
+        if (bgmAudio.paused) { bgmAudio.play(); playBtn.innerText = '⏸ Pause'; }
+        else { bgmAudio.pause(); playBtn.innerText = '🎵 Musik'; }
     });
-
-    // Tombol next: hanya tampil kalau playlist punya lebih dari 1 lagu
-    if (nextBtn) {
+    if (nextTrackBtn) {
         if (CONFIG.playlist.length > 1) {
-            nextBtn.classList.remove('hidden');
-            nextBtn.addEventListener('click', () => {
-                loadTrack(STATE.trackIndex + 1, !bgm.paused);
-                playBtn.innerText = bgm.paused ? '🎵 Musik' : '⏸ Pause';
+            nextTrackBtn.classList.remove('hidden');
+            nextTrackBtn.addEventListener('click', () => {
+                loadTrack(STATE.trackIndex + 1, !bgmAudio.paused);
+                if (playBtn) playBtn.innerText = bgmAudio.paused ? '🎵 Musik' : '⏸ Pause';
             });
-        } else {
-            nextBtn.classList.add('hidden');
-        }
+        } else nextTrackBtn.classList.add('hidden');
     }
-
-    // Lagu selesai -> otomatis lanjut ke lagu berikutnya (loop ke awal setelah lagu terakhir)
-    bgm.addEventListener('ended', () => {
+    bgmAudio.addEventListener('ended', () => {
         loadTrack(STATE.trackIndex + 1, true);
-        playBtn.innerText = '⏸ Pause';
+        if (playBtn) playBtn.innerText = '⏸ Pause';
     });
-
-    // Auto-play setelah user klik pertama kali
     window.addEventListener('click', () => {
-        if (bgm.paused && bgm.currentTime===0) {
-            bgm.play().catch(()=>{});
-            playBtn.innerText = '⏸ Pause';
+        if (bgmAudio.paused && bgmAudio.currentTime === 0) {
+            bgmAudio.play().catch(() => {});
+            if (playBtn) playBtn.innerText = '⏸ Pause';
         }
     }, { once: true });
 }
 
 // ============================================================
-// SETUP KAMERA TOGGLE - Tombol show/hide webcam
+// CAM TOGGLE
 // ============================================================
 function setupCamToggle() {
-    const camBtn = document.getElementById('cam-toggle-btn');
-    const webcamWrapper = document.getElementById('webcam-wrapper');
+    if (!camToggleBtn || !webcamWrapper) return;
     let camVisible = !isMobile;
     if (!camVisible) webcamWrapper.classList.add('hidden');
-
-    camBtn.addEventListener('click', async () => {
+    camToggleBtn.addEventListener('click', async () => {
         camVisible = !camVisible;
         if (camVisible) {
             webcamWrapper.classList.remove('hidden');
-            camBtn.innerText = '📷 Tutup';
-            // Init mediapipe di mobile jika belum
-            if (isMobile && !handLandmarker) {
-                await initMediaPipe();
-            }
+            camToggleBtn.innerText = '📷 Tutup';
+            if (isMobile && !handLandmarker) await initMediaPipe();
         } else {
             webcamWrapper.classList.add('hidden');
-            camBtn.innerText = '📷 Kamera';
+            camToggleBtn.innerText = '📷 Kamera';
         }
     });
 }
 
 // ============================================================
-// ANIMASI LOOP - Fungsi utama yang berjalan setiap frame
+// ANIMATION LOOP
 // ============================================================
 function animate() {
     requestAnimationFrame(animate);
     const dt = clock.getDelta();
     const time = clock.getElapsedTime();
 
-    // Update OrbitControls (mobile)
     if (isMobile) controls.update();
 
-    // Efek pulse (detak) di mode love
-    let pulse = 1.0;
-    if (STATE.mode==='TREE') pulse = 1.0+Math.sin(time*1.3)*0.03;
-    mainGroup.scale.lerp(new THREE.Vector3(pulse,pulse,pulse), 2*dt);
+    if (CONFIG.face.enabled) {
+        STATE.face.smileIntensity = THREE.MathUtils.lerp(STATE.face.smileIntensity, STATE.face.targetIntensity, CONFIG.face.transitionSpeed * dt);
+        if (STATE.face.smileIntensity < 0.001) STATE.face.smileIntensity = 0;
+    }
 
-    // Rotasi grup utama
+    let pulse = 1.0;
+    if (STATE.mode === 'TREE') pulse = 1.0 + Math.sin(time * 1.3) * 0.03;
+    if (STATE.face.smileIntensity > 0.01) pulse *= 1 + STATE.face.smileIntensity * 0.1;
+    mainGroup.scale.lerp(new THREE.Vector3(pulse, pulse, pulse), 2 * dt);
+
     if (!isMobile) {
-        // Desktop: rotasi dikontrol oleh hand tracking
         if (STATE.hand.detected) {
-            const targetRotY = STATE.hand.x*Math.PI*0.5;
-            const targetRotX = STATE.hand.y*Math.PI*0.2;
-            STATE.rotation.y += (targetRotY-STATE.rotation.y)*2.0*dt;
-            STATE.rotation.x += (targetRotX-STATE.rotation.x)*2.0*dt;
-        } else {
-            // Auto-rotate lambat jika tangan tidak terdeteksi
-            STATE.rotation.y += 0.2*dt;
-            STATE.rotation.x += (0-STATE.rotation.x)*dt;
-        }
+            const tY = STATE.hand.x * Math.PI * 0.5, tX = STATE.hand.y * Math.PI * 0.2;
+            STATE.rotation.y += (tY - STATE.rotation.y) * 2.0 * dt;
+            STATE.rotation.x += (tX - STATE.rotation.x) * 2.0 * dt;
+        } else { STATE.rotation.y += 0.2 * dt; STATE.rotation.x += (0 - STATE.rotation.x) * dt; }
         mainGroup.rotation.y = STATE.rotation.y;
         mainGroup.rotation.x = STATE.rotation.x;
-    } else {
-        // Mobile: OrbitControls handle camera, auto-rotate grup lambat
-        if (!controls.enabled) {
-            STATE.rotation.y += 0.15*dt;
-            mainGroup.rotation.y = STATE.rotation.y;
-        }
-    }
+    } else if (!controls.enabled) { STATE.rotation.y += 0.15 * dt; mainGroup.rotation.y = STATE.rotation.y; }
 
-    // Update semua partikel
     particleSystem.forEach(p => {
         p.update(dt, STATE.mode, STATE.focusTarget);
-        if (p.type==='PHOTO' && STATE.mode==='TREE') {
-            p.mesh.lookAt(camera.position);
-        }
+        if (p.type === 'PHOTO' && STATE.mode === 'TREE') p.mesh.lookAt(camera.position);
     });
 
-    // Render dengan efek bloom
-    composer.render();
+    if (composer) composer.render();
 
-    // Proses permintaan screenshot (easter egg) tepat setelah frame ini selesai di-render,
-    // supaya hasil capture menangkap tampilan terkini termasuk efek bloom.
-    if (captureRequested) {
-        captureRequested = false;
-        captureScreenshot();
-    }
+    if (captureRequested) { captureRequested = false; captureScreenshot(); }
 }
 
 // ============================================================
-// EASTER EGG: Capture screenshot scene & trigger download
+// SCREENSHOT
 // ============================================================
 function captureScreenshot() {
     try {
@@ -897,26 +928,15 @@ function captureScreenshot() {
         link.click();
         document.body.removeChild(link);
         showCaptureFeedback();
-    } catch (e) {
-        console.warn('Gagal mengambil screenshot:', e);
-    }
+    } catch (e) { console.warn('Screenshot failed:', e); }
 }
 
-// Efek visual singkat: flash putih + notifikasi "Tersimpan" saat screenshot berhasil diambil
 function showCaptureFeedback() {
-    const flash = document.getElementById('capture-flash');
-    const notif = document.getElementById('capture-notif');
-    if (flash) {
-        flash.classList.add('active');
-        setTimeout(() => flash.classList.remove('active'), 250);
-    }
-    if (notif) {
-        notif.classList.add('visible');
-        setTimeout(() => notif.classList.remove('visible'), 2200);
-    }
+    if (captureFlash) { captureFlash.classList.add('active'); setTimeout(() => captureFlash.classList.remove('active'), 250); }
+    if (captureNotif) { captureNotif.classList.add('visible'); setTimeout(() => captureNotif.classList.remove('visible'), 2200); }
 }
 
 // ============================================================
-// START - Jalankan aplikasi
+// START
 // ============================================================
 init();

@@ -85,7 +85,7 @@ Aplikasi web 3D interaktif yang menampilkan partikel membentuk hati menggunakan 
 
 ---
 
-### 4. 🧠 assets/js/script.js (922 baris)
+### 4. 🧠 assets/js/script.js (~1050 baris)
 
 #### 4.1 Imports & Konfigurasi
 
@@ -427,14 +427,36 @@ captions: { 1: 'Momen spesial', 2: 'Hari bahagia' }
 
 ### 9. 🎯 Ringkasan
 
+**Fitur Baru (v2.1):**
+
+### 🌌 Parallax Portal
+Saat foto di-mode FOCUS, foto berubah menjadi **portal** ke mini-scene galaksi 3D:
+- **Cincin Portal:** Dua cincin (biru terang + ungu glow) berotasi berlawanan arah dengan efek breathing
+- **Galaxy Particles:** 300 partikel bintang dengan warna-warni di belakang foto membentuk galaksi mini
+- **Smooth Animation:** Ring berdenyut, partikel berputar perlahan, opacity bergelombang
+- **Transisi Mulus:** Portal otomatis aktif saat masuk FOCUS mode, berpindah saat swipe/navigasi foto, dan cleanup saat ganti mode
+
+### 🪞 Mirror Mode - Face Reaction (Senyum)
+Deteksi senyum via **MediaPipe Face Landmarker** (478 titik wajah):
+- **Algoritma Deteksi:** Mengukur rasio lebar mulut (landmark 61↔291) terhadap ukuran wajah (jarak mata 33↔263)
+- **Smooth Interpolation:** Nilai senyum di-lerp smooth (transitionSpeed) untuk hindari flicker
+- **Efek Visual:**
+  - Partikel love membesar hingga 2.8x saat senyum penuh
+  - Emissive intensity meningkat 3.5x + glow ekstra (bloom)
+  - Warna partikel bergeser ke pink cerah (#ff66aa) saat senyum > 30%
+  - Debu jadi lebih besar (1.5x) dan lebih terang (opacity naik)
+  - Pulse love heartbeat diperkuat 10%
+- **Konfigurasi:** Semua parameter bisa diubah di `CONFIG.face` (threshold, multiplier, kecepatan, warna)
+
 **Aplikasi ini menggabungkan:**
 - ✅ **3D Rendering** - Three.js dengan efek bloom dramatis
-- ✅ **Computer Vision** - MediaPipe hand landmark detection real-time
+- ✅ **Computer Vision** - MediaPipe hand + face landmark detection real-time
 - ✅ **Gesture Recognition** - Fist, open hand, pinch, peace sign, swipe
+- ✅ **Face Reaction** - Deteksi senyum mempengaruhi visual partikel 🪞
 - ✅ **Touch Interface** - Tap, drag, pinch untuk mobile
 - ✅ **Audio Player** - Playlist multi-lagu dengan auto-next
-- ✅ **Multi-mode** - LOVE (heart), SCATTER (explosion), FOCUS (photo zoom)
-- ✅ **Photo Gallery** - Frame 3D dengan caption
+- ✅ **Multi-mode** - LOVE (heart), SCATTER (explosion), FOCUS (photo zoom + portal 🌌)
+- ✅ **Photo Gallery** - Frame 3D dengan caption + portal galaxy
 - ✅ **Easter Egg** - Peace sign screenshot
 - ✅ **Responsive** - Desktop hand tracking ↔ Mobile touch
 - ✅ **Optimized** - Perbedaan kualitas sesuai device
