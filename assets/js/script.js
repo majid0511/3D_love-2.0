@@ -73,6 +73,13 @@ let swipeCooldownUntil = 0;
 const SWIPE_VELOCITY_THRESHOLD = 0.006;  // Sensitivitas swipe (unit per ms), makin kecil makin sensitif
 const SWIPE_COOLDOWN_MS = 600;           // Jeda antar-swipe biar gak ke-trigger berkali-kali
 
+// --- EASTER EGG: Screenshot via peace sign (✌️) ditahan 2 detik ---
+let peaceSignStartTime = null;   // Waktu mulai peace sign terdeteksi (null = belum/tidak terdeteksi)
+let captureRequested = false;    // Flag: capture diminta, diproses di animate() setelah render
+const PEACE_HOLD_MS = 2000;      // Durasi tahan peace sign sebelum capture terpicu
+let captureCooldownUntil = 0;
+const CAPTURE_COOLDOWN_MS = 3000; // Jeda antar-capture biar gak spam kalau gesture ditahan terus
+
 // ============================================================
 // VARIABEL GLOBAL THREE.JS
 // ============================================================
@@ -177,7 +184,9 @@ function initThree() {
     camera.position.set(0, 2, CONFIG.camera.z);
 
     // WebGL Renderer dengan optimasi performa
-    renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false, powerPreference: "high-performance" });
+    // preserveDrawingBuffer:true diperlukan supaya fitur screenshot (toDataURL) selalu
+    // berhasil menangkap frame terkini di semua browser (tanpa ini, hasil capture bisa blank di beberapa browser).
+    renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false, powerPreference: "high-performance", preserveDrawingBuffer: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2));
     renderer.toneMapping = THREE.ReinhardToneMapping;
@@ -588,21 +597,46 @@ function processGestures(result) {
         }
         prevHandX = STATE.hand.x;
         prevHandTime = now;
+
+        // --- EASTER EGG: Deteksi peace sign (✌️) - telunjuk & tengah lurus, manis & kelingking menekuk ---
+        const wristPt = wrist;
+        const indexDist = Math.hypot(lm[8].x-wristPt.x, lm[8].y-wristPt.y)/handSize;
+        const middleDist = Math.hypot(lm[12].x-wristPt.x, lm[12].y-wristPt.y)/handSize;
+        const ringDist = Math.hypot(lm[16].x-wristPt.x, lm[16].y-wristPt.y)/handSize;
+        const pinkyDist = Math.hypot(lm[20].x-wristPt.x, lm[20].y-wristPt.y)/handSize;
+        const isPeaceSign = indexDist>1.3 && middleDist>1.3 && ringDist<1.1 && pinkyDist<1.1;
+
+        if (isPeaceSign && now > captureCooldownUntil) {
+            if (peaceSignStartTime === null) peaceSignStartTime = now;
+            const heldMs = now - peaceSignStartTime;
+            const progress = Math.min(heldMs / PEACE_HOLD_MS, 1);
+            debugInfo.innerText = `✌️ Menahan untuk screenshot... ${Math.round(progress*100)}%`;
+            if (heldMs >= PEACE_HOLD_MS) {
+                captureRequested = true;              // Diproses di animate() setelah frame ini di-render
+                captureCooldownUntil = now + CAPTURE_COOLDOWN_MS;
+                peaceSignStartTime = null;
+            }
+        } else {
+            peaceSignStartTime = null;
+        }
         
-        // Logika gestur:
+        // Logika gestur (dilewati saat peace sign terdeteksi, supaya mode yang sedang aktif
+        // -misal FOCUS ke foto tertentu- tidak berubah selagi user menahan gesture screenshot):
         // - Tangan tertutup (extensionRatio < 1.5) -> Mode TREE (love)
         // - Cubit (pinchRatio < 0.35) -> Mode FOCUS (zoom foto acak)
         // - Tangan terbuka (extensionRatio > 1.7) -> Mode SCATTER
-        if (extensionRatio<1.5) {
-            STATE.mode='TREE'; STATE.focusTarget=null;
-        } else if (pinchRatio<0.35) {
-            if (STATE.mode!=='FOCUS') {
-                STATE.mode='FOCUS';
-                const photos=particleSystem.filter(p=>p.type==='PHOTO');
-                if (photos.length) STATE.focusTarget=photos[Math.floor(Math.random()*photos.length)].mesh;
+        if (!isPeaceSign) {
+            if (extensionRatio<1.5) {
+                STATE.mode='TREE'; STATE.focusTarget=null;
+            } else if (pinchRatio<0.35) {
+                if (STATE.mode!=='FOCUS') {
+                    STATE.mode='FOCUS';
+                    const photos=particleSystem.filter(p=>p.type==='PHOTO');
+                    if (photos.length) STATE.focusTarget=photos[Math.floor(Math.random()*photos.length)].mesh;
+                }
+            } else if (extensionRatio>1.7) {
+                STATE.mode='SCATTER'; STATE.focusTarget=null;
             }
-        } else if (extensionRatio>1.7) {
-            STATE.mode='SCATTER'; STATE.focusTarget=null;
         }
         updateModeIndicator();
     } else {
@@ -841,6 +875,45 @@ function animate() {
 
     // Render dengan efek bloom
     composer.render();
+
+    // Proses permintaan screenshot (easter egg) tepat setelah frame ini selesai di-render,
+    // supaya hasil capture menangkap tampilan terkini termasuk efek bloom.
+    if (captureRequested) {
+        captureRequested = false;
+        captureScreenshot();
+    }
+}
+
+// ============================================================
+// EASTER EGG: Capture screenshot scene & trigger download
+// ============================================================
+function captureScreenshot() {
+    try {
+        const dataURL = renderer.domElement.toDataURL('image/png');
+        const link = document.createElement('a');
+        link.download = `ciput-pic-${Date.now()}.png`;
+        link.href = dataURL;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        showCaptureFeedback();
+    } catch (e) {
+        console.warn('Gagal mengambil screenshot:', e);
+    }
+}
+
+// Efek visual singkat: flash putih + notifikasi "Tersimpan" saat screenshot berhasil diambil
+function showCaptureFeedback() {
+    const flash = document.getElementById('capture-flash');
+    const notif = document.getElementById('capture-notif');
+    if (flash) {
+        flash.classList.add('active');
+        setTimeout(() => flash.classList.remove('active'), 250);
+    }
+    if (notif) {
+        notif.classList.add('visible');
+        setTimeout(() => notif.classList.remove('visible'), 2200);
+    }
 }
 
 // ============================================================

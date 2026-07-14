@@ -210,6 +210,40 @@ body { margin: 0; overflow: hidden; background-color: #000000; font-family: 'Cin
 #photo-caption.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 /* ============================================================
+   EASTER EGG - Flash & notifikasi screenshot
+   ============================================================ */
+#capture-flash {
+    position: fixed;
+    inset: 0;
+    background: #fff;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 999;
+    transition: opacity 0.15s ease-out;
+}
+#capture-flash.active { opacity: 0.85; transition: opacity 0.05s ease-in; }
+
+#capture-notif {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0.9);
+    background: rgba(10, 10, 15, 0.85);
+    border: 1px solid rgba(212, 175, 55, 0.5);
+    color: #fceea7;
+    padding: 14px 28px;
+    border-radius: 8px;
+    font-size: 13px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    z-index: 1000;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+#capture-notif.visible { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+
+/* ============================================================
    MUSIC CONTROLS - Nama lagu & tombol play/next
    ============================================================ */
 #track-name {
