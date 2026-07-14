@@ -41,8 +41,8 @@ const CONFIG = {
     // Playlist musik latar. Tambahkan lagu baru dengan format { name, src }.
     // Urutan diputar sesuai array, otomatis lanjut ke lagu berikutnya saat selesai, lalu kembali ke awal.
     playlist: [
-        { name: 'Ed Sheeran - Perfect', src: 'lagu.mp3' },
-        { name: 'Nadhif Basalamah - kota ini tak sama tanpamu (Official Lyric Video) (1)', src: 'lagu2.mp3' },
+        { name: 'Lagu Utama', src: 'lagu.mp3' }
+        // { name: 'Lagu 2', src: 'lagu2.mp3' },
         // { name: 'Lagu 3', src: 'lagu3.mp3' },
     ],
     // Caption untuk tiap foto, key = nomor file (sesuai images/{nomor}.jpg).
@@ -65,6 +65,13 @@ const STATE = {
     rotation: { x: 0, y: 0 },               // Rotasi grup utama
     touch: { active: false, startX: 0, startY: 0, pinchDist: 0 }  // Touch state mobile
 };
+
+// Tracking swipe tangan (untuk navigasi ganti foto di mode FOCUS)
+let prevHandX = null;
+let prevHandTime = 0;
+let swipeCooldownUntil = 0;
+const SWIPE_VELOCITY_THRESHOLD = 0.006;  // Sensitivitas swipe (unit per ms), makin kecil makin sensitif
+const SWIPE_COOLDOWN_MS = 600;           // Jeda antar-swipe biar gak ke-trigger berkali-kali
 
 // ============================================================
 // VARIABEL GLOBAL THREE.JS
@@ -524,6 +531,17 @@ async function predictWebcam() {
     requestAnimationFrame(predictWebcam);
 }
 
+// Berpindah ke foto berikutnya (dir=1) atau sebelumnya (dir=-1) saat mode FOCUS aktif
+function navigatePhoto(dir) {
+    const photos = particleSystem.filter(p => p.type==='PHOTO');
+    if (!photos.length) return;
+    let idx = photos.findIndex(p => p.mesh === STATE.focusTarget);
+    if (idx === -1) idx = 0;
+    idx = (idx + dir + photos.length) % photos.length;
+    STATE.focusTarget = photos[idx].mesh;
+    updateModeIndicator();
+}
+
 // ============================================================
 // PROSES GESTUR TANGAN - Deteksi posisi jari untuk ganti mode
 // ============================================================
@@ -551,6 +569,25 @@ function processGestures(result) {
         const pinchRatio = pinchDist/handSize;         // Rasio cubitan
         
         debugInfo.innerText = `Ext:${extensionRatio.toFixed(2)} Pinch:${pinchRatio.toFixed(2)} | ${STATE.mode}`;
+
+        // --- DETEKSI SWIPE: gerak tangan cepat kiri/kanan saat mode FOCUS -> ganti foto ---
+        const now = performance.now();
+        if (STATE.mode === 'FOCUS' && prevHandX !== null) {
+            const dt = now - prevHandTime;
+            // dt dibatasi <400ms supaya gap besar (misal tangan sempat hilang lalu muncul lagi) tidak dianggap swipe
+            if (dt > 0 && dt < 400) {
+                const velocity = (STATE.hand.x - prevHandX) / dt;
+                if (Math.abs(velocity) > SWIPE_VELOCITY_THRESHOLD && now > swipeCooldownUntil) {
+                    // Catatan: webcam biasanya mirrored, jadi arah swipe di sini mengikuti
+                    // arah gerak tangan apa adanya (tanpa dibalik). Kalau terasa terbalik dari
+                    // perspektif user, tinggal balik tanda velocity di baris di bawah.
+                    navigatePhoto(velocity > 0 ? 1 : -1);
+                    swipeCooldownUntil = now + SWIPE_COOLDOWN_MS;
+                }
+            }
+        }
+        prevHandX = STATE.hand.x;
+        prevHandTime = now;
         
         // Logika gestur:
         // - Tangan tertutup (extensionRatio < 1.5) -> Mode TREE (love)
@@ -597,9 +634,9 @@ function setupTouchControls() {
 
     canvas.addEventListener('touchend', (e) => {
         if (tapTimeout !== null && e.changedTouches.length === 1) {
-            const dx = Math.abs(e.changedTouches[0].clientX - STATE.touch.startX);
-            const dy = Math.abs(e.changedTouches[0].clientY - STATE.touch.startY);
-            if (dx < 10 && dy < 10) {  // Pastikan bukan drag/geser
+            const dx = e.changedTouches[0].clientX - STATE.touch.startX;
+            const dy = e.changedTouches[0].clientY - STATE.touch.startY;
+            if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {  // Pastikan bukan drag/geser -> tap biasa
                 // Cycle mode
                 const modes = ['TREE','SCATTER','FOCUS'];
                 const idx = modes.indexOf(STATE.mode);
@@ -612,6 +649,9 @@ function setupTouchControls() {
                     STATE.focusTarget = null;
                 }
                 updateModeIndicator();
+            } else if (STATE.mode === 'FOCUS' && Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) {
+                // Swipe horizontal saat mode FOCUS -> ganti foto (konsisten dengan swipe gesture tangan)
+                navigatePhoto(dx < 0 ? 1 : -1);
             }
         }
     }, { passive: true });
