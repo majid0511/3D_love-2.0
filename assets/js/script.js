@@ -37,6 +37,19 @@ const CONFIG = {
         scanCount: 10,                           // Jumlah gambar di folder images/
         extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp'],
         images: []
+    },
+    // Playlist musik latar. Tambahkan lagu baru dengan format { name, src }.
+    // Urutan diputar sesuai array, otomatis lanjut ke lagu berikutnya saat selesai, lalu kembali ke awal.
+    playlist: [
+        { name: 'Ed Sheeran - Perfect', src: 'lagu.mp3' }
+        // { name: 'Nadhif Basalamah - kota ini tak sama tanpamu (Official Lyric Video) (1)', src: 'lagu2.mp3' },
+        // { name: 'Lagu 3', src: 'lagu3.mp3' },
+    ],
+    // Caption untuk tiap foto, key = nomor file (sesuai images/{nomor}.jpg).
+    // Kosongkan jika foto tidak punya caption.
+    captions: {
+        // 1: 'Liburan pertama kita ✨',
+        // 2: 'Momen paling berkesan',
     }
 };
 
@@ -47,6 +60,7 @@ const STATE = {
     mode: 'TREE',          // Mode: TREE | SCATTER | FOCUS
     focusIndex: -1,
     focusTarget: null,     // Mesh foto yang sedang di-focus
+    trackIndex: 0,         // Index lagu yang sedang diputar di playlist
     hand: { detected: false, x: 0, y: 0 },  // Posisi tangan (MediaPipe)
     rotation: { x: 0, y: 0 },               // Rotasi grup utama
     touch: { active: false, startX: 0, startY: 0, pinchDist: 0 }  // Touch state mobile
@@ -129,7 +143,7 @@ function tryLoadImageSequential(loader, i, extIndex) {
     loader.load(path,
         (t) => {
             t.colorSpace = THREE.SRGBColorSpace;
-            addPhotoToScene(t);
+            addPhotoToScene(t, i);
             // Ekstensi ini cocok, tidak perlu coba ekstensi lain untuk foto ke-i
         },
         undefined,
@@ -431,7 +445,7 @@ function createDust() {
 // ============================================================
 // TAMBAH FOTO - Membuat mesh foto dengan bingkai
 // ============================================================
-function addPhotoToScene(texture) {
+function addPhotoToScene(texture, imgNumber = null) {
     const frameMat = new THREE.MeshStandardMaterial({ color:CONFIG.colors.frameColor, metalness:1.0, roughness:0.1 });
     let width=1.2, height=1.2;
     if (texture.image) {
@@ -442,6 +456,10 @@ function addPhotoToScene(texture) {
     const frame = new THREE.Mesh(frameGeo, frameMat);
     const photoGeo = new THREE.PlaneGeometry(width, height);
     const photoMat = new THREE.MeshBasicMaterial({ map:texture, side:THREE.DoubleSide });
+    // Nonaktifkan tone mapping khusus untuk foto: renderer.toneMappingExposure di-set tinggi (2.2)
+    // supaya efek bloom partikel dramatis, tapi ini bikin foto jadi overexposed/putih.
+    // toneMapped:false membuat foto tampil dengan warna asli, tidak terpengaruh exposure global.
+    photoMat.toneMapped = false;
     const photo = new THREE.Mesh(photoGeo, photoMat);
     photo.position.z = 0.04;
     
@@ -450,6 +468,9 @@ function addPhotoToScene(texture) {
     group.add(frame); group.add(photo);
     frame.scale.set(width/1.2, height/1.2, 1);
     const s=0.8; group.scale.set(s,s,s);
+
+    // Simpan caption (jika ada) di userData grup, dipakai saat mode FOCUS
+    group.userData.caption = (imgNumber !== null && CONFIG.captions[imgNumber]) ? CONFIG.captions[imgNumber] : '';
     
     photoMeshGroup.add(group);
     particleSystem.push(new Particle(group,'PHOTO',false));
@@ -602,6 +623,22 @@ function setupTouchControls() {
 function updateModeIndicator() {
     const labels = { TREE: '❤ LOVE', SCATTER: '✨ SCATTER', FOCUS: '🔍 FOCUS' };
     modeIndicator.textContent = labels[STATE.mode] || STATE.mode;
+    updatePhotoCaption();
+}
+
+// ============================================================
+// UPDATE CAPTION FOTO - Tampilkan caption saat mode FOCUS aktif
+// ============================================================
+function updatePhotoCaption() {
+    const captionEl = document.getElementById('photo-caption');
+    if (!captionEl) return;
+    const caption = (STATE.mode === 'FOCUS' && STATE.focusTarget) ? STATE.focusTarget.userData.caption : '';
+    if (caption) {
+        captionEl.textContent = caption;
+        captionEl.classList.add('visible');
+    } else {
+        captionEl.classList.remove('visible');
+    }
 }
 
 // ============================================================
@@ -636,18 +673,57 @@ function setupEvents() {
 }
 
 // ============================================================
-// SETUP MUSIK - Tombol play/pause lagu
+// SETUP MUSIK - Playlist multi-lagu dengan play/pause & next
 // ============================================================
 function setupMusic() {
     const bgm = document.getElementById('bgm');
     const playBtn = document.getElementById('play-btn');
+    const nextBtn = document.getElementById('next-track-btn');
+    const trackNameEl = document.getElementById('track-name');
+
+    // Muat lagu sesuai STATE.trackIndex, opsional langsung play
+    function loadTrack(index, autoplay) {
+        const playlist = CONFIG.playlist;
+        if (!playlist.length) return;
+        STATE.trackIndex = ((index % playlist.length) + playlist.length) % playlist.length; // wrap aman
+        const track = playlist[STATE.trackIndex];
+        bgm.src = track.src;
+        if (trackNameEl) trackNameEl.textContent = track.name;
+        if (autoplay) bgm.play().catch(()=>{});
+    }
+
+    loadTrack(0, false);
+
     playBtn.addEventListener('click', () => {
         if (bgm.paused) { bgm.play(); playBtn.innerText = '⏸ Pause'; }
         else { bgm.pause(); playBtn.innerText = '🎵 Musik'; }
     });
+
+    // Tombol next: hanya tampil kalau playlist punya lebih dari 1 lagu
+    if (nextBtn) {
+        if (CONFIG.playlist.length > 1) {
+            nextBtn.classList.remove('hidden');
+            nextBtn.addEventListener('click', () => {
+                loadTrack(STATE.trackIndex + 1, !bgm.paused);
+                playBtn.innerText = bgm.paused ? '🎵 Musik' : '⏸ Pause';
+            });
+        } else {
+            nextBtn.classList.add('hidden');
+        }
+    }
+
+    // Lagu selesai -> otomatis lanjut ke lagu berikutnya (loop ke awal setelah lagu terakhir)
+    bgm.addEventListener('ended', () => {
+        loadTrack(STATE.trackIndex + 1, true);
+        playBtn.innerText = '⏸ Pause';
+    });
+
     // Auto-play setelah user klik pertama kali
     window.addEventListener('click', () => {
-        if (bgm.paused && bgm.currentTime===0) bgm.play().catch(()=>{});
+        if (bgm.paused && bgm.currentTime===0) {
+            bgm.play().catch(()=>{});
+            playBtn.innerText = '⏸ Pause';
+        }
     }, { once: true });
 }
 

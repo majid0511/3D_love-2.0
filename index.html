@@ -43,11 +43,9 @@
     <div id="canvas-container"></div>
 
     <!-- ============================================================
-    AUDIO - Musik latar (auto-loop)
+    AUDIO - Musik latar (playlist diatur via JS, lihat CONFIG.playlist)
     ============================================================ -->
-    <audio id="bgm" loop preload="auto">
-        <source src="lagu.mp3" type="audio/mpeg">
-    </audio>
+    <audio id="bgm" preload="auto"></audio>
 
     <!-- ============================================================
     TITLE - Judul "3D Love" di bagian atas
@@ -58,6 +56,11 @@
     MODE INDICATOR - Menampilkan mode aktif (LOVE / SCATTER / FOCUS)
     ============================================================ -->
     <div id="mode-indicator">❤ LOVE</div>
+
+    <!-- ============================================================
+    PHOTO CAPTION - Menampilkan caption foto saat mode FOCUS aktif
+    ============================================================ -->
+    <div id="photo-caption"></div>
 
     <!-- ============================================================
     TOUCH HINT - Petunjuk gesture untuk pengguna mobile
@@ -80,7 +83,11 @@
 
         <!-- Tombol Kontrol: Musik & Kamera -->
         <div id="right-controls">
-            <button id="play-btn" class="upload-btn">🎵 Musik</button>
+            <div id="track-name"></div>
+            <div id="music-controls">
+                <button id="play-btn" class="upload-btn">🎵 Musik</button>
+                <button id="next-track-btn" class="upload-btn hidden">⏭ Next</button>
+            </div>
             <button id="cam-toggle-btn" class="upload-btn">📷 Kamera</button>
         </div>
     </div>
