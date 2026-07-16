@@ -610,7 +610,9 @@ const FACE_CONNECTIONS = [
 function drawHandOverlay(lm) {
     if (!overlayCtx || !overlayCanvas) return;
     const ctx = overlayCtx, w = overlayCanvas.width, h = overlayCanvas.height;
-    const pts = lm.map(p => ({ x: (1 - p.x) * w, y: p.y * h }));
+        // CSS sudah scaleX(-1) di video & overlay, jadi pakai p.x langsung
+        // (tanpa mirror) agar landmark sejajar dengan gambar yang sudah terbalik.
+        const pts = lm.map(p => ({ x: p.x * w, y: p.y * h }));
     ctx.strokeStyle = 'rgba(255,200,100,0.7)';
     ctx.lineWidth = 2;
     HAND_CONNECTIONS.forEach(([i, j]) => {
@@ -627,7 +629,9 @@ function drawHandOverlay(lm) {
 function drawFaceOverlay(lm) {
     if (!overlayCtx || !overlayCanvas) return;
     const ctx = overlayCtx, w = overlayCanvas.width, h = overlayCanvas.height;
-    const pts = lm.map(p => ({ x: (1 - p.x) * w, y: p.y * h }));
+        // CSS sudah scaleX(-1) di video & overlay, jadi pakai p.x langsung
+        // (tanpa mirror) agar landmark sejajar dengan gambar yang sudah terbalik.
+        const pts = lm.map(p => ({ x: p.x * w, y: p.y * h }));
     ctx.strokeStyle = 'rgba(100,200,255,0.4)';
     ctx.lineWidth = 1;
     FACE_CONNECTIONS.forEach(([i, j]) => {
@@ -664,14 +668,21 @@ function processGestures(result) {
     if (result.landmarks && result.landmarks.length > 0) {
         STATE.hand.detected = true;
         const lm = result.landmarks[0];
-        STATE.hand.x = (lm[9].x - 0.5) * 2;
+        // Mirorkan x agar konsisten dengan tampilan video yang sudah di-scaleX(-1)
+        // MediaPipe raw: x=0 = kiri gambar asli, x=1 = kanan gambar asli
+        // Video (mirror): x=0 = kanan visual, x=1 = kiri visual
+        // Gunakan mirrored x agar gesture sesuai dengan apa yang dilihat user
+        const mirroredX = 1 - lm[9].x;
+        STATE.hand.x = (mirroredX - 0.5) * 2;
         STATE.hand.y = (lm[9].y - 0.5) * 2;
 
-        const thumb = lm[4], index = lm[8], wrist = lm[0], middleMCP = lm[9];
+        const mirroredLm = lm.map(p => ({ x: 1 - p.x, y: p.y, z: p.z }));
+
+        const thumb = mirroredLm[4], index = mirroredLm[8], wrist = mirroredLm[0], middleMCP = mirroredLm[9];
         const handSize = Math.hypot(middleMCP.x - wrist.x, middleMCP.y - wrist.y);
         if (handSize < 0.02) return;
 
-        const tips = [lm[8], lm[12], lm[16], lm[20]];
+        const tips = [mirroredLm[8], mirroredLm[12], mirroredLm[16], mirroredLm[20]];
         let avgTipDist = 0;
         tips.forEach(t => avgTipDist += Math.hypot(t.x - wrist.x, t.y - wrist.y));
         avgTipDist /= 4;
@@ -697,10 +708,10 @@ function processGestures(result) {
         prevHandX = STATE.hand.x;
         prevHandTime = now;
 
-        const indexDist = Math.hypot(lm[8].x - wrist.x, lm[8].y - wrist.y) / handSize;
-        const middleDist = Math.hypot(lm[12].x - wrist.x, lm[12].y - wrist.y) / handSize;
-        const ringDist = Math.hypot(lm[16].x - wrist.x, lm[16].y - wrist.y) / handSize;
-        const pinkyDist = Math.hypot(lm[20].x - wrist.x, lm[20].y - wrist.y) / handSize;
+        const indexDist = Math.hypot(mirroredLm[8].x - wrist.x, mirroredLm[8].y - wrist.y) / handSize;
+        const middleDist = Math.hypot(mirroredLm[12].x - wrist.x, mirroredLm[12].y - wrist.y) / handSize;
+        const ringDist = Math.hypot(mirroredLm[16].x - wrist.x, mirroredLm[16].y - wrist.y) / handSize;
+        const pinkyDist = Math.hypot(mirroredLm[20].x - wrist.x, mirroredLm[20].y - wrist.y) / handSize;
         const isPeaceSign = indexDist > 1.3 && middleDist > 1.3 && ringDist < 1.1 && pinkyDist < 1.1;
 
         if (isPeaceSign && now > captureCooldownUntil) {

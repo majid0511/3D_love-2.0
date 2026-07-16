@@ -252,6 +252,16 @@ handLandmarker = await HandLandmarker.createFromOptions(vision, {
 - **Swipe:** Perubahan `STATE.hand.x` terhadap waktu → navigasi foto di FOCUS mode
 - **Peace sign:** Deteksi khusus telunjuk & tengah lurus, manis & kelingking menekuk
 
+**⚠️ Mirroring Hand Tracking:**
+Karena video kamera ditampilkan dengan efek mirror (`scaleX(-1)` di CSS) untuk pengalaman selfie, koordinat X dari MediaPipe perlu di-mirror agar gesture sesuai dengan visual yang dilihat user:
+```javascript
+// MediaPipe raw: x=0 = kiri gambar asli, x=1 = kanan gambar asli
+// Video (mirror): x=0 = kanan visual, x=1 = kiri visual
+const mirroredX = 1 - lm[9].x;
+STATE.hand.x = (mirroredX - 0.5) * 2;  // Dinormalisasi ke [-1, 1]
+```
+Semua landmark tangan dibuat versi mirrored dengan `mirroredLm = lm.map(p => ({ x: 1 - p.x, y: p.y, z: p.z }))`, dan seluruh perhitungan jarak jari (extension, pinch, peace sign) menggunakan `mirroredLm`. Overlay drawing (`drawHandOverlay`) tetap menggunakan raw coordinates karena CSS overlay juga sudah di-`scaleX(-1)`.
+
 #### 4.13 Logika Gestur
 
 ```
